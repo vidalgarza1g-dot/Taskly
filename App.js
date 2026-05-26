@@ -76,6 +76,7 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import MapView, { Marker } from 'react-native-maps';
 
 // 🔥 FIREBASE CONFIG
 const firebaseConfig = {
@@ -271,17 +272,36 @@ function StarRating({ rating, size = 16 }) {
   );
 }
 
-// 🗺️ Location Picker Modal with GPS support
+// 🗺️ Interactive Location Picker — drag map to pin exact spot
 function LocationPickerModal({ onConfirm, onClose, initialLocation }) {
-  const [selectedLocation, setSelectedLocation] = useState(initialLocation || MONTERREY_LOCATIONS[0]);
+  const defaultRegion = {
+    latitude: initialLocation?.lat || 25.6866,
+    longitude: initialLocation?.lng || -100.3161,
+    latitudeDelta: 0.01,
+    longitudeDelta: 0.01,
+  };
+  const [region, setRegion] = useState(defaultRegion);
   const [exactAddress, setExactAddress] = useState('');
-  const [loading, setLoading] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
-  const [gpsCoords, setGpsCoords] = useState(null);
+  const [geocoding, setGeocoding] = useState(false);
+  const geocodeTimer = useRef(null);
 
-  const getMapPreviewUrl = (lat, lng) => {
-    if (!GOOGLE_MAPS_API_KEY || GOOGLE_MAPS_API_KEY === 'YOUR_GOOGLE_MAPS_API_KEY') return null;
-    return `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=16&size=600x300&markers=color:red%7C${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`;
+  const reverseGeocode = async (lat, lng) => {
+    setGeocoding(true);
+    try {
+      const [place] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+      if (place) {
+        const parts = [place.street, place.streetNumber, place.district || place.subregion].filter(Boolean);
+        if (parts.length) setExactAddress(parts.join(', '));
+      }
+    } catch {}
+    setGeocoding(false);
+  };
+
+  const onRegionChangeComplete = (r) => {
+    setRegion(r);
+    if (geocodeTimer.current) clearTimeout(geocodeTimer.current);
+    geocodeTimer.current = setTimeout(() => reverseGeocode(r.latitude, r.longitude), 700);
   };
 
   const useGPS = async () => {
@@ -289,171 +309,90 @@ function LocationPickerModal({ onConfirm, onClose, initialLocation }) {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permiso denegado', 'Necesitamos acceso a tu ubicación para usar el GPS.');
-        setGpsLoading(false);
+        Alert.alert('Permiso denegado', 'Necesitamos acceso a tu ubicación.');
         return;
       }
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       const { latitude, longitude } = loc.coords;
-
-      const [place] = await Location.reverseGeocodeAsync({ latitude, longitude });
-      if (place) {
-        const parts = [place.street, place.streetNumber, place.district || place.subregion].filter(Boolean);
-        setExactAddress(parts.join(', '));
-      }
-
-      setGpsCoords({ lat: latitude, lng: longitude });
-      setSelectedLocation({ name: 'Mi ubicación GPS', lat: latitude, lng: longitude });
-    } catch (e) {
-      Alert.alert('Error GPS', 'No se pudo obtener tu ubicación. Escribe la dirección manualmente.');
+      setRegion(r => ({ ...r, latitude, longitude }));
+      reverseGeocode(latitude, longitude);
+    } catch {
+      Alert.alert('Error GPS', 'No se pudo obtener tu ubicación.');
     } finally {
       setGpsLoading(false);
     }
   };
 
-  const handleConfirm = async () => {
+  const handleConfirm = () => {
     if (!exactAddress.trim()) {
-      Alert.alert(
-        '⚠️ Dirección requerida',
-        'Usa el GPS o escribe la dirección exacta (calle, número y colonia).'
-      );
+      Alert.alert('Dirección requerida', 'Mueve el mapa hasta el lugar exacto o usa el GPS.');
       return;
     }
-    setLoading(true);
-    const lat = gpsCoords ? gpsCoords.lat : selectedLocation.lat + (Math.random() * 0.002 - 0.001);
-    const lng = gpsCoords ? gpsCoords.lng : selectedLocation.lng + (Math.random() * 0.002 - 0.001);
-    onConfirm({ address: exactAddress.trim(), lat, lng, area: selectedLocation.name });
-    setLoading(false);
+    onConfirm({
+      address: exactAddress.trim(),
+      lat: region.latitude,
+      lng: region.longitude,
+      area: 'Seleccionado en mapa',
+    });
   };
 
-  const previewLat = gpsCoords ? gpsCoords.lat : selectedLocation.lat;
-  const previewLng = gpsCoords ? gpsCoords.lng : selectedLocation.lng;
-  const mapPreviewUrl = getMapPreviewUrl(previewLat, previewLng);
-
   return (
-    <Modal visible={true} animationType="slide">
-      <SafeAreaView style={styles.container}>
+    <Modal visible animationType="slide">
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
         <StatusBar barStyle="light-content" />
-        
+
         <View style={styles.modalHeader}>
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeButton}>← Cancelar</Text>
           </TouchableOpacity>
-          <Text style={styles.modalTitle}>Confirmar ubicación</Text>
+          <Text style={styles.modalTitle}>Seleccionar ubicación</Text>
           <View style={{ width: 80 }} />
         </View>
 
-        <KeyboardAvoidingView 
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={90}
-        >
-          <ScrollView style={styles.modalContent} contentContainerStyle={{ paddingBottom: 100 }}>
-            {/* GPS Button */}
-            <TouchableOpacity
-              style={styles.gpsButton}
-              onPress={useGPS}
-              disabled={gpsLoading}
-            >
-              {gpsLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Text style={styles.gpsButtonText}>
-                  {gpsCoords ? '✓ Ubicación GPS obtenida' : '📡 Usar mi ubicación actual (GPS)'}
-                </Text>
-              )}
+        {/* Interactive map — pin stays fixed in center, map pans beneath */}
+        <View style={{ flex: 1 }}>
+          <MapView
+            style={{ flex: 1 }}
+            initialRegion={defaultRegion}
+            onRegionChangeComplete={onRegionChangeComplete}
+            showsUserLocation
+            showsMyLocationButton={false}
+          />
+          {/* Fixed center crosshair pin */}
+          <View pointerEvents="none" style={styles.mapPinContainer}>
+            <Text style={styles.mapPinEmoji}>📍</Text>
+          </View>
+          {geocoding && (
+            <View style={styles.mapGeocodingBadge}>
+              <ActivityIndicator size="small" color={COLORS.accent} />
+              <Text style={{ color: COLORS.text, fontSize: 11, marginLeft: 6 }}>Detectando dirección...</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Bottom panel */}
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.locationBottomPanel}>
+            <TouchableOpacity style={styles.gpsButton} onPress={useGPS} disabled={gpsLoading}>
+              {gpsLoading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.gpsButtonText}>📡 Ir a mi ubicación GPS</Text>}
             </TouchableOpacity>
 
-            <Text style={styles.formLabel}>O SELECCIONA ÁREA GENERAL</Text>
-            <ScrollView style={styles.locationPickerScroll} horizontal showsHorizontalScrollIndicator={false}>
-              {MONTERREY_LOCATIONS.map(loc => (
-                <TouchableOpacity
-                  key={loc.name}
-                  style={[
-                    styles.locationChip,
-                    selectedLocation.name === loc.name && styles.locationChipActive
-                  ]}
-                  onPress={() => { setSelectedLocation(loc); setGpsCoords(null); }}
-                >
-                  <Text style={[
-                    styles.locationChipText,
-                    selectedLocation.name === loc.name && styles.locationChipTextActive
-                  ]}>
-                    {loc.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            {/* Map Preview */}
-            {mapPreviewUrl ? (
-              <View style={styles.mapPreviewContainer}>
-                <Image
-                  source={{ uri: mapPreviewUrl }}
-                  style={styles.mapPreviewImage}
-                  resizeMode="cover"
-                />
-                <Text style={styles.mapPreviewHint}>
-                  📌 {previewLat.toFixed(5)}, {previewLng.toFixed(5)}
-                  {gpsCoords ? ' · GPS' : ''}
-                </Text>
-                <TouchableOpacity
-                  style={styles.changeLocationButton}
-                  onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${previewLat},${previewLng}`)}
-                >
-                  <Text style={styles.changeLocationText}>📍 Ver en Google Maps</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View style={styles.mapPlaceholder}>
-                <Text style={styles.mapPlaceholderIcon}>🗺️</Text>
-                <Text style={styles.mapPlaceholderText}>
-                  {gpsCoords
-                    ? `GPS: ${previewLat.toFixed(5)}, ${previewLng.toFixed(5)}`
-                    : selectedLocation.name}
-                </Text>
-                {gpsCoords && (
-                  <TouchableOpacity
-                    style={[styles.changeLocationButton, { marginTop: 8 }]}
-                    onPress={() => Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${previewLat},${previewLng}`)}
-                  >
-                    <Text style={styles.changeLocationText}>📍 Ver en Google Maps</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
-
-            <Text style={styles.formLabel}>DIRECCIÓN EXACTA *</Text>
+            <Text style={styles.formLabel}>DIRECCIÓN DETECTADA</Text>
             <TextInput
-              style={[styles.input, styles.textArea]}
+              style={[styles.input, { marginBottom: 12 }]}
               value={exactAddress}
               onChangeText={setExactAddress}
-              placeholder="Calle, número, colonia..."
+              placeholder="Mueve el mapa o escribe aquí..."
               placeholderTextColor={COLORS.muted}
               multiline
-              numberOfLines={2}
             />
 
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <TouchableOpacity 
-                style={[styles.primaryButton, { flex: 1, backgroundColor: COLORS.border }]}
-                onPress={onClose}
-              >
-                <Text style={styles.primaryButtonText}>Cancelar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.primaryButton, { flex: 1 }, loading && { opacity: 0.6 }]}
-                onPress={handleConfirm}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Confirmar</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleConfirm}>
+              <Text style={styles.primaryButtonText}>Confirmar ubicación →</Text>
+            </TouchableOpacity>
+          </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
@@ -1590,7 +1529,7 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
 }
 
 // Job Detail Modal (with location picker and client rating)
-function JobDetailModal({ job, user, onClose, onRefresh }) {
+function JobDetailModal({ job, user, onClose, onRefresh, onViewWorkerProfile }) {
   const [bidPrice, setBidPrice] = useState('');
   const [bidMessage, setBidMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1599,6 +1538,7 @@ function JobDetailModal({ job, user, onClose, onRefresh }) {
   const [otherUser, setOtherUser] = useState(null);
   const [showRating, setShowRating] = useState(false);
   const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [showMap, setShowMap] = useState(false);
 
   const isMyJob = user.id === job.userId;
   const alreadyBid = job.bids?.some(bid => bid.userId === user.id);
@@ -3651,12 +3591,42 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 14,
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   gpsButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: '800',
+  },
+  mapPinContainer: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mapPinEmoji: {
+    fontSize: 40,
+    marginBottom: 36,
+  },
+  mapGeocodingBadge: {
+    position: 'absolute',
+    top: 12,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  locationBottomPanel: {
+    backgroundColor: COLORS.card,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    padding: 16,
+    paddingBottom: 24,
   },
   
   // Location Picker Modal Styles
