@@ -152,7 +152,7 @@ const STRIPE_PUBLISHABLE_KEY = "YOUR_STRIPE_PUBLISHABLE_KEY";
 // 🔑 GOOGLE OAUTH — get from Firebase Console → Authentication → Google → Web client ID
 const GOOGLE_WEB_CLIENT_ID = "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com";
 // iOS: Google Cloud Console → Credentials → iOS OAuth 2.0 client ID
-const GOOGLE_IOS_CLIENT_ID = "YOUR_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_IOS_CLIENT_ID = "756871178148-ij14s8c9h36rj0r5ej12ao0i0n6r5hvr.apps.googleusercontent.com";
 // Android: Google Cloud Console → Credentials → Android OAuth 2.0 client ID
 const GOOGLE_ANDROID_CLIENT_ID = "YOUR_GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com";
 // Auto-flag: set to true only when real client IDs are in place
