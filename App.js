@@ -151,6 +151,12 @@ const STRIPE_PUBLISHABLE_KEY = "YOUR_STRIPE_PUBLISHABLE_KEY";
 
 // 🔑 GOOGLE OAUTH — get from Firebase Console → Authentication → Google → Web client ID
 const GOOGLE_WEB_CLIENT_ID = "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com";
+// iOS: Google Cloud Console → Credentials → iOS OAuth 2.0 client ID
+const GOOGLE_IOS_CLIENT_ID = "YOUR_GOOGLE_IOS_CLIENT_ID.apps.googleusercontent.com";
+// Android: Google Cloud Console → Credentials → Android OAuth 2.0 client ID
+const GOOGLE_ANDROID_CLIENT_ID = "YOUR_GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com";
+// Auto-flag: set to true only when real client IDs are in place
+const GOOGLE_CONFIGURED = !GOOGLE_WEB_CLIENT_ID.startsWith('YOUR_');
 
 // Helper Functions
 // ✅ SPECIFIC notification messages with person name
@@ -635,7 +641,14 @@ function WorkerCard({ worker, onPress, showReviews = false }) {
         </View>
       )}
       <View style={{ flex: 1 }}>
-        <Text style={styles.workerName}>{worker.name}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={styles.workerName}>{worker.name}</Text>
+          {worker.verificationStatus === 'verified' && (
+            <View style={styles.verifiedBadge}>
+              <Text style={styles.verifiedBadgeText}>✓</Text>
+            </View>
+          )}
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
           {worker.rating > 0 && (
             <>
@@ -2418,6 +2431,97 @@ function WorkersDirectoryScreen({ onClose, onSelectWorker }) {
 }
 
 // Profile Screen (with image upload)
+// Worker identity verification — INE upload + status display
+function IneVerificationSection({ userId, userProfile, onRefresh }) {
+  const status = userProfile?.verificationStatus || 'unverified';
+  const [ineImages, setIneImages] = useState({ front: null, back: null });
+  const [uploading, setUploading] = useState(false);
+
+  const pickIne = async (side) => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets?.[0]) {
+      setIneImages(prev => ({ ...prev, [side]: result.assets[0].uri }));
+    }
+  };
+
+  const submitVerification = async () => {
+    if (!ineImages.front || !ineImages.back) {
+      Alert.alert('Faltan imágenes', 'Sube el frente y reverso de tu INE.');
+      return;
+    }
+    setUploading(true);
+    try {
+      const frontUrl = await uploadImage(ineImages.front, `verification/${userId}/ine_front.jpg`);
+      const backUrl = await uploadImage(ineImages.back, `verification/${userId}/ine_back.jpg`);
+      await updateDoc(doc(db, 'users', userId), {
+        verificationStatus: 'pending',
+        ineImages: { front: frontUrl, back: backUrl },
+        verificationRequestedAt: serverTimestamp(),
+      });
+      Alert.alert('✓ Enviado', 'Tu solicitud está en revisión. Te notificaremos cuando sea aprobada.');
+      onRefresh();
+    } catch {
+      Alert.alert('Error', 'No se pudieron subir las imágenes. Verifica las reglas de Firebase Storage.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const statusConfig = {
+    unverified: { icon: '📋', label: 'Sin verificar', color: COLORS.muted, desc: 'Verifica tu identidad con tu INE para obtener el sello de cuenta verificada y generar más confianza con los clientes.' },
+    pending:    { icon: '⏳', label: 'En revisión',   color: COLORS.yellow, desc: 'Tus documentos están siendo revisados. El proceso toma 1-2 días hábiles.' },
+    verified:   { icon: '✓',  label: 'Verificado',    color: COLORS.green,  desc: 'Tu cuenta está verificada. Apareces con sello de verificación en el directorio.' },
+  };
+  const cfg = statusConfig[status] || statusConfig.unverified;
+
+  return (
+    <View style={styles.ineSection}>
+      <Text style={styles.formLabel}>VERIFICACIÓN DE IDENTIDAD</Text>
+
+      <View style={[styles.ineStatusBox, { borderColor: cfg.color + '66' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <Text style={{ fontSize: 22 }}>{cfg.icon}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.ineStatusLabel, { color: cfg.color }]}>{cfg.label}</Text>
+            <Text style={styles.ineStatusDesc}>{cfg.desc}</Text>
+          </View>
+        </View>
+      </View>
+
+      {status === 'unverified' && (
+        <>
+          <Text style={[styles.formLabel, { marginTop: 12 }]}>SUBE TU INE</Text>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <TouchableOpacity style={[styles.ineImageBox, ineImages.front && styles.ineImageBoxDone]} onPress={() => pickIne('front')}>
+              {ineImages.front
+                ? <Image source={{ uri: ineImages.front }} style={styles.ineThumb} />
+                : <Text style={styles.ineImageLabel}>📷{'\n'}Frente</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.ineImageBox, ineImages.back && styles.ineImageBoxDone]} onPress={() => pickIne('back')}>
+              {ineImages.back
+                ? <Image source={{ uri: ineImages.back }} style={styles.ineThumb} />
+                : <Text style={styles.ineImageLabel}>📷{'\n'}Reverso</Text>}
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={[styles.primaryButton, { marginTop: 12 }, (!ineImages.front || !ineImages.back || uploading) && { opacity: 0.5 }]}
+            onPress={submitVerification}
+            disabled={!ineImages.front || !ineImages.back || uploading}
+          >
+            {uploading
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.primaryButtonText}>Enviar para verificación →</Text>}
+          </TouchableOpacity>
+        </>
+      )}
+    </View>
+  );
+}
+
 function ProfileScreen({ user, onClose }) {
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2600,7 +2704,7 @@ function ProfileScreen({ user, onClose }) {
                     </View>
                   )}
 
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={styles.primaryButton}
                     onPress={handleSave}
                   >
@@ -2633,6 +2737,11 @@ function ProfileScreen({ user, onClose }) {
                     </Text>
                   </View>
                 </View>
+              )}
+
+              {/* INE Verification — workers only */}
+              {user.role === 'worker' && (
+                <IneVerificationSection userId={user.id} userProfile={userProfile} onRefresh={loadProfile} />
               )}
             </ScrollView>
           </KeyboardAvoidingView>
@@ -2826,6 +2935,7 @@ async function ensureUserDoc(firebaseUser, role, displayName = null) {
       name,
       rating: 0, jobCount: 0,
       clientRating: 0, clientRatedCount: 0,
+      verificationStatus: role === 'worker' ? 'unverified' : null,
       createdAt: serverTimestamp(),
     });
   }
@@ -2917,6 +3027,32 @@ function PhoneAuthModal({ role, onClose }) {
   );
 }
 
+// Isolated so the hook only mounts when Google is properly configured — prevents crash when IDs are placeholder
+function GoogleSignInButton({ role, disabled }) {
+  const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+    iosClientId: GOOGLE_IOS_CLIENT_ID,
+    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
+    selectAccount: true,
+  });
+
+  useEffect(() => {
+    if (googleResponse?.type === 'success') {
+      const { id_token } = googleResponse.params;
+      const credential = GoogleAuthProvider.credential(id_token);
+      signInWithCredential(auth, credential)
+        .then(r => ensureUserDoc(r.user, role))
+        .catch(() => Alert.alert('Error', 'No se pudo iniciar sesión con Google'));
+    }
+  }, [googleResponse]);
+
+  return (
+    <TouchableOpacity style={styles.googleButton} onPress={() => promptGoogleAsync()} disabled={disabled}>
+      <Text style={styles.googleButtonText}>🔵  Continuar con Google</Text>
+    </TouchableOpacity>
+  );
+}
+
 function LoginScreen({ role, onBack }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -2925,24 +3061,6 @@ function LoginScreen({ role, onBack }) {
 
   const roleName = role === 'client' ? 'Cliente' : 'Trabajador';
   const roleIcon = role === 'client' ? '👤' : '👷';
-
-  // Google OAuth via expo-auth-session
-  const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
-    webClientId: GOOGLE_WEB_CLIENT_ID,
-    selectAccount: true,
-  });
-
-  useEffect(() => {
-    if (googleResponse?.type === 'success') {
-      const { id_token } = googleResponse.params;
-      setLoading(true);
-      const credential = GoogleAuthProvider.credential(id_token);
-      signInWithCredential(auth, credential)
-        .then(r => ensureUserDoc(r.user, role))
-        .catch(() => Alert.alert('Error', 'No se pudo iniciar sesión con Google'))
-        .finally(() => setLoading(false));
-    }
-  }, [googleResponse]);
 
   const handleAppleSignIn = async () => {
     setLoading(true);
@@ -3017,13 +3135,13 @@ function LoginScreen({ role, onBack }) {
               />
             )}
 
-            <TouchableOpacity
-              style={styles.googleButton}
-              onPress={() => promptGoogleAsync()}
-              disabled={loading}
-            >
-              <Text style={styles.googleButtonText}>🔵  Continuar con Google</Text>
-            </TouchableOpacity>
+            {GOOGLE_CONFIGURED
+              ? <GoogleSignInButton role={role} disabled={loading} />
+              : (
+                <TouchableOpacity style={[styles.googleButton, { opacity: 0.4 }]} disabled>
+                  <Text style={styles.googleButtonText}>🔵  Continuar con Google</Text>
+                </TouchableOpacity>
+              )}
 
             <TouchableOpacity
               style={styles.smsButton}
@@ -4839,6 +4957,46 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 4,
   },
+
+  // ✅ Verified badge on worker cards
+  verifiedBadge: {
+    backgroundColor: COLORS.blue,
+    borderRadius: 10,
+    width: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  verifiedBadgeText: { color: '#fff', fontSize: 11, fontWeight: '900' },
+
+  // ✅ INE verification section in ProfileScreen
+  ineSection: {
+    marginHorizontal: 20,
+    marginTop: 24,
+    marginBottom: 32,
+  },
+  ineStatusBox: {
+    backgroundColor: COLORS.card,
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+  },
+  ineStatusLabel: { fontSize: 14, fontWeight: '800', marginBottom: 4 },
+  ineStatusDesc: { fontSize: 12, color: COLORS.muted, lineHeight: 16 },
+  ineImageBox: {
+    flex: 1,
+    aspectRatio: 1.6,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  ineImageBoxDone: { borderColor: COLORS.green, borderStyle: 'solid' },
+  ineThumb: { width: '100%', height: '100%', borderRadius: 10 },
+  ineImageLabel: { color: COLORS.muted, fontSize: 13, textAlign: 'center', lineHeight: 20 },
 
   // sectionHeader already defined above
 
