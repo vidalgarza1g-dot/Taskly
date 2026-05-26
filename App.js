@@ -809,35 +809,52 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
             renderItem={({ item }) => {
               const isMe = item.senderId === currentUser.id;
 
-              // ✅ Schedule proposal card
+              // Schedule proposal card
               if (item.type === 'schedule_proposal') {
-                const isAgreed = liveJob?.scheduledTime?.status === 'agreed' &&
-                  liveJob.scheduledTime.date === item.scheduledDate;
+                const scheduleStatus = liveJob?.scheduledTime?.date === item.scheduledDate
+                  ? liveJob?.scheduledTime?.status
+                  : null;
+                const isAgreed   = scheduleStatus === 'agreed';
+                const isDeclined = scheduleStatus === 'declined';
+
                 return (
-                  <View style={styles.scheduleCard}>
+                  <View style={[styles.scheduleCard, isDeclined && { opacity: 0.45 }]}>
                     <Text style={styles.scheduleCardTitle}>
-                      {isAgreed ? '✅ Horario Confirmado' : '📅 Propuesta de Horario'}
+                      {isAgreed   ? '✅ Horario Confirmado'
+                       : isDeclined ? '❌ Propuesta Rechazada'
+                       : '📅 Propuesta de Horario'}
                     </Text>
                     <Text style={styles.scheduleCardTime}>
                       {item.scheduledDate} · {item.scheduledTime}
                     </Text>
-                    {!isMe && !isAgreed && (
+                    {!isMe && !isAgreed && !isDeclined && (
                       <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                         <TouchableOpacity style={[styles.scheduleBtn, { flex: 1, backgroundColor: COLORS.green }]}
                           onPress={() => handleAcceptSchedule(item)}>
                           <Text style={styles.scheduleBtnText}>✓ Aceptar</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={[styles.scheduleBtn, { flex: 1, backgroundColor: COLORS.red }]}
-                          onPress={() => {
-                            addDoc(collection(db, 'messages'), {
-                              chatId, senderId: currentUser.id, senderName: currentUser.name,
-                              type: 'text', text: '❌ No puedo en ese horario, ¿podemos acordar otro?',
-                              createdAt: serverTimestamp(),
-                            });
+                          onPress={async () => {
+                            try {
+                              await updateDoc(doc(db, 'jobs', job.id), {
+                                scheduledTime: { ...liveJob.scheduledTime, status: 'declined' }
+                              });
+                              await addDoc(collection(db, 'messages'), {
+                                chatId, senderId: currentUser.id, senderName: currentUser.name,
+                                type: 'text',
+                                text: '❌ No puedo en ese horario, ¿podemos acordar otro?',
+                                createdAt: serverTimestamp(),
+                              });
+                            } catch { Alert.alert('Error', 'No se pudo rechazar la propuesta'); }
                           }}>
                           <Text style={styles.scheduleBtnText}>✕ Rechazar</Text>
                         </TouchableOpacity>
                       </View>
+                    )}
+                    {isDeclined && (
+                      <Text style={[styles.formHint, { marginTop: 8, color: COLORS.red }]}>
+                        Propuesta rechazada — propón un nuevo horario
+                      </Text>
                     )}
                     {isAgreed && (
                       <TouchableOpacity style={[styles.scheduleBtn, { backgroundColor: COLORS.blue, marginTop: 10 }]}
@@ -846,7 +863,7 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                         <Text style={styles.scheduleBtnText}>📅 Agregar a calendario</Text>
                       </TouchableOpacity>
                     )}
-                    {isMe && !isAgreed && (
+                    {isMe && !isAgreed && !isDeclined && (
                       <Text style={[styles.formHint, { marginTop: 8 }]}>⏳ Esperando respuesta...</Text>
                     )}
                   </View>
@@ -1127,15 +1144,21 @@ function PaymentModal({ amount, description, onSuccess, onClose }) {
 function WorkersInlineList({ onSelectWorker }) {
   const [workers, setWorkers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    getDocs(query(collection(db, 'users'), where('role', '==', 'worker'))).then(snap => {
+  const fetchWorkers = async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    try {
+      const snap = await getDocs(query(collection(db, 'users'), where('role', '==', 'worker')));
       const w = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       w.sort((a, b) => (b.rating || 0) - (a.rating || 0));
       setWorkers(w);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
+    } catch {}
+    setLoading(false);
+    setRefreshing(false);
+  };
+
+  useEffect(() => { fetchWorkers(); }, []);
 
   if (loading) return <ActivityIndicator size="large" color={COLORS.accent} style={{ marginTop: 40 }} />;
 
@@ -1153,6 +1176,9 @@ function WorkersInlineList({ onSelectWorker }) {
       renderItem={({ item }) => (
         <WorkerCard worker={item} showReviews onPress={onSelectWorker} />
       )}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={() => fetchWorkers(true)} tintColor={COLORS.accent} />
+      }
     />
   );
 }
@@ -2380,17 +2406,26 @@ function ProfileScreen({ user, onClose }) {
 
     setLoading(true);
     try {
-      let imageUrl = profileImage;
+      // Try uploading new image separately; if it fails, keep existing image and still save profile text
+      let imageUrl = profileImage?.startsWith('file://') ? null : (profileImage ?? null);
       if (profileImage && profileImage.startsWith('file://')) {
-        imageUrl = await uploadImage(profileImage, `profiles/${user.id}.jpg`);
+        try {
+          imageUrl = await uploadImage(profileImage, `profiles/${user.id}.jpg`);
+        } catch {
+          // uploadImage already showed the Firebase Storage rules alert
+          // fall through and save profile without the new photo
+          imageUrl = null;
+        }
       }
 
-      await updateDoc(doc(db, 'users', user.id), {
+      const update = {
         name: name.trim(),
         bio: bio.trim(),
-        profileImage: imageUrl,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (imageUrl !== null) update.profileImage = imageUrl;
+
+      await updateDoc(doc(db, 'users', user.id), update);
 
       Alert.alert('✓ Guardado', 'Tu perfil fue actualizado');
       setEditing(false);
@@ -2887,6 +2922,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('browse');
   const [exploreSection, setExploreSection] = useState('listings');
   const [bidFilter, setBidFilter] = useState('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 800);
+  };
 
   // Auth state listener
   useEffect(() => {
@@ -3197,9 +3238,9 @@ export default function App() {
               ) : null
             }
             renderItem={({ item }) => (
-              <JobCard 
-                job={item} 
-                onPress={setSelectedJob} 
+              <JobCard
+                job={item}
+                onPress={setSelectedJob}
                 showMenu={true}
                 onEdit={(job) => {
                   setEditingJob(job);
@@ -3208,6 +3249,9 @@ export default function App() {
                 onDelete={handleDeleteJob}
               />
             )}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.accent} />
+            }
           />
         </>
       );
@@ -3288,6 +3332,9 @@ export default function App() {
                 </View>
               </TouchableOpacity>
             )}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.accent} />
+            }
           />
         </View>
       );
