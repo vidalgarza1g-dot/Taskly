@@ -47,14 +47,24 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import * as Google from 'expo-auth-session/providers/google';
+import * as Crypto from 'expo-crypto';
+import * as WebBrowser from 'expo-web-browser';
+
+WebBrowser.maybeCompleteAuthSession();
 import { initializeApp } from 'firebase/app';
-import { 
+import {
   initializeAuth,
   getReactNativePersistence,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   onAuthStateChanged,
   signOut,
+  GoogleAuthProvider,
+  OAuthProvider,
+  signInWithCredential,
+  signInWithPhoneNumber,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -122,6 +132,7 @@ const SERVICES = [
   { id: 'painting', label: 'Pintura', icon: '🎨', color: '#E74C3C' },
   { id: 'carpentry', label: 'Carpintería', icon: '🪚', color: '#95A5A6' },
   { id: 'ac', label: 'A/C', icon: '❄️', color: '#1ABC9C' },
+  { id: 'other', label: 'Otro', icon: '🔨', color: '#7F8C8D' },
 ];
 
 const MONTERREY_LOCATIONS = [
@@ -137,6 +148,9 @@ const URGENT_JOB_PRICE = 75; // MXN
 
 // 💰 STRIPE CONFIGURATION (For payment processing)
 const STRIPE_PUBLISHABLE_KEY = "YOUR_STRIPE_PUBLISHABLE_KEY";
+
+// 🔑 GOOGLE OAUTH — get from Firebase Console → Authentication → Google → Web client ID
+const GOOGLE_WEB_CLIENT_ID = "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com";
 
 // Helper Functions
 // ✅ SPECIFIC notification messages with person name
@@ -1116,6 +1130,41 @@ function PaymentModal({ amount, description, onSuccess, onClose }) {
                 maxLength={4}
               />
             </View>
+          </View>
+
+          {/* Apple Pay / Google Pay (require native build — shown as info in Expo Go) */}
+          <View style={styles.nativePayDivider}>
+            <View style={styles.nativePayDividerLine} />
+            <Text style={styles.nativePayDividerText}>pago rápido</Text>
+            <View style={styles.nativePayDividerLine} />
+          </View>
+
+          {Platform.OS === 'ios' ? (
+            <TouchableOpacity
+              style={[styles.nativePayButton, { backgroundColor: '#000' }]}
+              onPress={() => Alert.alert('Apple Pay', 'Apple Pay requiere una build de producción. Por el momento usa el pago con tarjeta.')}
+            >
+              <Text style={styles.nativePayButtonText}>  Pagar con Apple Pay</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.nativePayButton, { backgroundColor: '#4285F4' }]}
+              onPress={() => Alert.alert('Google Pay', 'Google Pay requiere una build de producción. Por el momento usa el pago con tarjeta.')}
+            >
+              <Text style={styles.nativePayButtonText}>G  Pagar con Google Pay</Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={styles.nativePayNote}>
+            <Text style={styles.nativePayNoteText}>
+              Apple Pay y Google Pay estarán disponibles en la versión de producción de la app.
+            </Text>
+          </View>
+
+          <View style={styles.nativePayDivider}>
+            <View style={styles.nativePayDividerLine} />
+            <Text style={styles.nativePayDividerText}>o paga con tarjeta</Text>
+            <View style={styles.nativePayDividerLine} />
           </View>
 
           <View style={styles.paymentInfo}>
@@ -2761,86 +2810,190 @@ function RoleSelectionScreen({ onRoleSelected }) {
   );
 }
 
+// Shared helper: ensure a Firestore user doc exists after any auth method
+async function ensureUserDoc(firebaseUser, role, displayName = null) {
+  const userRef = doc(db, 'users', firebaseUser.uid);
+  const snap = await getDoc(userRef);
+  if (!snap.exists()) {
+    const name = displayName
+      || firebaseUser.displayName
+      || firebaseUser.email?.split('@')[0]
+      || `Usuario ${firebaseUser.phoneNumber?.slice(-4) || ''}`;
+    await setDoc(userRef, {
+      email: firebaseUser.email || '',
+      phone: firebaseUser.phoneNumber || '',
+      role,
+      name,
+      rating: 0, jobCount: 0,
+      clientRating: 0, clientRatedCount: 0,
+      createdAt: serverTimestamp(),
+    });
+  }
+}
+
+// SMS / Phone auth modal
+function PhoneAuthModal({ role, onClose }) {
+  const [phone, setPhone] = useState('+52 ');
+  const [otp, setOtp] = useState('');
+  const [confirmation, setConfirmation] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const sendOTP = async () => {
+    const cleaned = phone.replace(/\s/g, '');
+    if (cleaned.length < 10) { Alert.alert('Error', 'Ingresa un número válido con código de país (+52...)'); return; }
+    setLoading(true);
+    try {
+      const conf = await signInWithPhoneNumber(auth, cleaned);
+      setConfirmation(conf);
+    } catch (e) {
+      Alert.alert('Error SMS', e.message || 'No se pudo enviar el código. Verifica el número e intenta de nuevo.');
+    } finally { setLoading(false); }
+  };
+
+  const verifyOTP = async () => {
+    if (!otp || otp.length < 4) return;
+    setLoading(true);
+    try {
+      const result = await confirmation.confirm(otp);
+      await ensureUserDoc(result.user, role);
+      onClose();
+    } catch {
+      Alert.alert('Código incorrecto', 'Revisa el SMS e intenta de nuevo.');
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent>
+      <KeyboardAvoidingView style={styles.phoneAuthOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={styles.phoneAuthContent}>
+          <Text style={styles.phoneAuthTitle}>📱 Iniciar sesión con SMS</Text>
+
+          {!confirmation ? (
+            <>
+              <Text style={styles.formLabel}>NÚMERO DE TELÉFONO</Text>
+              <TextInput
+                style={styles.input}
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="+52 81 1234 5678"
+                placeholderTextColor={COLORS.muted}
+                keyboardType="phone-pad"
+                autoFocus
+              />
+              <Text style={styles.formHint}>Incluye el código de país (+52 para México)</Text>
+              <TouchableOpacity style={[styles.primaryButton, loading && { opacity: 0.6 }]} onPress={sendOTP} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Enviar código →</Text>}
+              </TouchableOpacity>
+            </>
+          ) : (
+            <>
+              <Text style={styles.formLabel}>CÓDIGO DE VERIFICACIÓN</Text>
+              <TextInput
+                style={[styles.input, { letterSpacing: 8, fontSize: 24, textAlign: 'center' }]}
+                value={otp}
+                onChangeText={setOtp}
+                placeholder="000000"
+                placeholderTextColor={COLORS.muted}
+                keyboardType="numeric"
+                maxLength={6}
+                autoFocus
+              />
+              <Text style={styles.formHint}>Revisa tu SMS en {phone}</Text>
+              <TouchableOpacity style={[styles.primaryButton, loading && { opacity: 0.6 }]} onPress={verifyOTP} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Verificar →</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setConfirmation(null)} style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={{ color: COLORS.accent, fontSize: 13 }}>← Cambiar número</Text>
+              </TouchableOpacity>
+            </>
+          )}
+
+          <TouchableOpacity onPress={onClose} style={{ marginTop: 16, alignItems: 'center' }}>
+            <Text style={{ color: COLORS.muted, fontSize: 13 }}>Cancelar</Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 function LoginScreen({ role, onBack }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showPhoneAuth, setShowPhoneAuth] = useState(false);
 
   const roleName = role === 'client' ? 'Cliente' : 'Trabajador';
   const roleIcon = role === 'client' ? '👤' : '👷';
 
-  const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert('Error', 'Ingresa email y contraseña');
-      return;
-    }
+  // Google OAuth via expo-auth-session
+  const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+    selectAccount: true,
+  });
 
-    if (password.length < 6) {
-      Alert.alert('Error', 'La contraseña debe tener al menos 6 caracteres');
-      return;
+  useEffect(() => {
+    if (googleResponse?.type === 'success') {
+      const { id_token } = googleResponse.params;
+      setLoading(true);
+      const credential = GoogleAuthProvider.credential(id_token);
+      signInWithCredential(auth, credential)
+        .then(r => ensureUserDoc(r.user, role))
+        .catch(() => Alert.alert('Error', 'No se pudo iniciar sesión con Google'))
+        .finally(() => setLoading(false));
     }
+  }, [googleResponse]);
 
+  const handleAppleSignIn = async () => {
     setLoading(true);
-    
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-      
-      if (!userDoc.exists()) {
-        await setDoc(doc(db, 'users', userCredential.user.uid), {
-          email: email,
-          role: role,
-          name: email.split('@')[0],
-          rating: 0,
-          jobCount: 0,
-          clientRating: 0,
-          clientRatedCount: 0,
-          createdAt: serverTimestamp(),
-        });
+      const nonce = Math.random().toString(36).substring(2, 12);
+      const hashed = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, nonce);
+      const apple = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashed,
+      });
+      const provider = new OAuthProvider('apple.com');
+      const credential = provider.credential({ idToken: apple.identityToken, rawNonce: nonce });
+      const result = await signInWithCredential(auth, credential);
+      const name = apple.fullName
+        ? `${apple.fullName.givenName || ''} ${apple.fullName.familyName || ''}`.trim()
+        : null;
+      await ensureUserDoc(result.user, role, name);
+    } catch (e) {
+      if (e.code !== 'ERR_REQUEST_CANCELED') Alert.alert('Error', 'No se pudo iniciar sesión con Apple');
+    } finally { setLoading(false); }
+  };
 
-        // Setup push notifications
-        await setupPushNotifications(userCredential.user.uid);
-      }
+  const handleLogin = async () => {
+    if (!email || !password) { Alert.alert('Error', 'Ingresa email y contraseña'); return; }
+    if (password.length < 6) { Alert.alert('Error', 'La contraseña debe tener al menos 6 caracteres'); return; }
+    setLoading(true);
+    try {
+      const uc = await signInWithEmailAndPassword(auth, email, password);
+      await ensureUserDoc(uc.user, role);
     } catch (error) {
       if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
         try {
-          const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-          await setDoc(doc(db, 'users', userCredential.user.uid), {
-            email: email,
-            role: role,
-            name: email.split('@')[0],
-            rating: 0,
-            jobCount: 0,
-            clientRating: 0,
-            clientRatedCount: 0,
-            createdAt: serverTimestamp(),
-          });
-
-          await setupPushNotifications(userCredential.user.uid);
+          const uc = await createUserWithEmailAndPassword(auth, email, password);
+          await ensureUserDoc(uc.user, role);
           Alert.alert('✓ Cuenta creada!', `Bienvenido como ${roleName}`);
-        } catch (createError) {
-          Alert.alert('Error', 'No se pudo crear la cuenta');
-        }
+        } catch { Alert.alert('Error', 'No se pudo crear la cuenta'); }
       } else if (error.code === 'auth/wrong-password') {
         Alert.alert('Error', 'Contraseña incorrecta');
       } else {
         Alert.alert('Error', 'Error de conexión');
       }
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-      
-      {/* Fixed keyboard handling for login */}
-      <KeyboardAvoidingView 
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={0}
-      >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.loginContainer}>
           <TouchableOpacity onPress={onBack} style={styles.backButton}>
             <Text style={styles.backButtonText}>← Cambiar tipo de cuenta</Text>
@@ -2853,7 +3006,39 @@ function LoginScreen({ role, onBack }) {
           </View>
 
           <View style={styles.formContainer}>
-            <Text style={styles.welcomeText}>Iniciar sesión</Text>
+            {/* Social auth buttons */}
+            {Platform.OS === 'ios' && (
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={12}
+                style={styles.appleButton}
+                onPress={handleAppleSignIn}
+              />
+            )}
+
+            <TouchableOpacity
+              style={styles.googleButton}
+              onPress={() => promptGoogleAsync()}
+              disabled={loading}
+            >
+              <Text style={styles.googleButtonText}>🔵  Continuar con Google</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.smsButton}
+              onPress={() => setShowPhoneAuth(true)}
+              disabled={loading}
+            >
+              <Text style={styles.smsButtonText}>📱  Continuar con SMS</Text>
+            </TouchableOpacity>
+
+            {/* Divider */}
+            <View style={styles.authDivider}>
+              <View style={styles.authDividerLine} />
+              <Text style={styles.authDividerText}>o con email</Text>
+              <View style={styles.authDividerLine} />
+            </View>
 
             <TextInput
               style={styles.input}
@@ -2865,7 +3050,6 @@ function LoginScreen({ role, onBack }) {
               autoCapitalize="none"
               autoCorrect={false}
             />
-
             <TextInput
               style={styles.input}
               value={password}
@@ -2875,16 +3059,12 @@ function LoginScreen({ role, onBack }) {
               secureTextEntry
             />
 
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.primaryButton, loading && { opacity: 0.6 }]}
               onPress={handleLogin}
               disabled={loading}
             >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.primaryButtonText}>Continuar →</Text>
-              )}
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Continuar →</Text>}
             </TouchableOpacity>
 
             <View style={styles.infoBox}>
@@ -2896,6 +3076,10 @@ function LoginScreen({ role, onBack }) {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {showPhoneAuth && (
+        <PhoneAuthModal role={role} onClose={() => setShowPhoneAuth(false)} />
+      )}
     </SafeAreaView>
   );
 }
@@ -4657,4 +4841,95 @@ const styles = StyleSheet.create({
   },
 
   // sectionHeader already defined above
+
+  // ✅ Social auth buttons
+  appleButton: {
+    width: '100%',
+    height: 50,
+    borderRadius: 12,
+    marginBottom: 4,
+  },
+  googleButton: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  googleButtonText: { color: '#222', fontWeight: '700', fontSize: 15 },
+  smsButton: {
+    backgroundColor: COLORS.green + '22',
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.green + '55',
+    marginBottom: 4,
+  },
+  smsButtonText: { color: COLORS.green, fontWeight: '700', fontSize: 15 },
+
+  // ✅ Divider between social and email login
+  authDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 8,
+  },
+  authDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  authDividerText: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    marginHorizontal: 12,
+  },
+
+  // ✅ Phone auth modal
+  phoneAuthOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'flex-end',
+  },
+  phoneAuthContent: {
+    backgroundColor: COLORS.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    gap: 12,
+    paddingBottom: 40,
+  },
+  phoneAuthTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.text,
+    marginBottom: 8,
+  },
+
+  // ✅ Apple/Google Pay buttons
+  nativePayButton: {
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  nativePayButtonText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  nativePayDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 8,
+  },
+  nativePayDividerLine: { flex: 1, height: 1, backgroundColor: COLORS.border },
+  nativePayDividerText: { color: COLORS.muted, fontSize: 12, fontWeight: '600', marginHorizontal: 12 },
+  nativePayNote: {
+    backgroundColor: COLORS.border,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  nativePayNoteText: { color: COLORS.muted, fontSize: 11, textAlign: 'center', lineHeight: 16 },
 });
