@@ -77,6 +77,7 @@ import {
 } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import MapView, { Marker } from 'react-native-maps';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 // 🔥 FIREBASE CONFIG
 const firebaseConfig = {
@@ -199,12 +200,24 @@ const getOrCreateChat = async (user1Id, user2Id, jobId) => {
 };
 
 // 📸 Image Upload Helper — Firebase Storage
+// If this fails, go to Firebase Console → Storage → Rules and set:
+//   allow read, write: if request.auth != null;
 const uploadImage = async (imageUri, path) => {
-  const storageRef = ref(storage, path);
-  const response = await fetch(imageUri);
-  const blob = await response.blob();
-  await uploadBytes(storageRef, blob);
-  return await getDownloadURL(storageRef);
+  try {
+    const storageRef = ref(storage, path);
+    const response = await fetch(imageUri);
+    const blob = await response.blob();
+    await uploadBytes(storageRef, blob);
+    return await getDownloadURL(storageRef);
+  } catch (error) {
+    if (error.code === 'storage/unauthorized') {
+      Alert.alert(
+        'Permiso denegado',
+        'Para subir imágenes ve a Firebase Console → Storage → Rules y cambia la regla a:\n\nallow read, write: if request.auth != null;'
+      );
+    }
+    throw error;
+  }
 };
 
 // 🔔 Push Notifications Setup Helper
@@ -546,7 +559,7 @@ function JobCard({ job, onPress, showMenu = false, onEdit, onDelete, showCreator
           {showCreator && job.userName && (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
               <Text style={styles.jobCreator}>Por: {job.userName}</Text>
-              {showClientRating && job.clientRating && job.clientRating > 0 && (
+              {showClientRating && job.clientRating > 0 && (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                   <Text style={{ fontSize: 10 }}>⭐</Text>
                   <Text style={styles.clientRatingText}>{job.clientRating.toFixed(1)}</Text>
@@ -1146,18 +1159,24 @@ function WorkersInlineList({ onSelectWorker }) {
 
 // ✅ Schedule Modal - propose a visit time
 function ScheduleModal({ job, currentUser, otherUserId, chatId, onClose }) {
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(10, 0, 0, 0);
+
+  const [selectedDate, setSelectedDate] = useState(tomorrow);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const formatDate = (d) => d.toLocaleDateString('es-MX', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const formatTime = (d) => d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: true });
+  const dateStr = () => selectedDate.toISOString().slice(0, 10);
+  const timeStr = () => selectedDate.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false });
+
   const handlePropose = async () => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      Alert.alert('Formato incorrecto', 'Escribe la fecha así: 2026-06-15'); return;
-    }
-    if (!/^\d{2}:\d{2}$/.test(time)) {
-      Alert.alert('Formato incorrecto', 'Escribe la hora así: 10:00'); return;
-    }
     setLoading(true);
+    const date = dateStr();
+    const time = timeStr();
     try {
       await updateDoc(doc(db, 'jobs', job.id), {
         scheduledTime: { date, time, proposedBy: currentUser.id, proposedByName: currentUser.name, status: 'proposed' }
@@ -1171,7 +1190,7 @@ function ScheduleModal({ job, currentUser, otherUserId, chatId, onClose }) {
       await createNotification(otherUserId, 'schedule_proposed', currentUser.name, {
         date, time, jobId: job.id, jobTitle: job.title,
       });
-      Alert.alert('✓ Enviado', `Propuesta enviada: ${date} a las ${time}`);
+      Alert.alert('✓ Enviado', `Propuesta: ${formatDate(selectedDate)} a las ${formatTime(selectedDate)}`);
       onClose();
     } catch { Alert.alert('Error', 'No se pudo enviar la propuesta'); }
     finally { setLoading(false); }
@@ -1179,23 +1198,67 @@ function ScheduleModal({ job, currentUser, otherUserId, chatId, onClose }) {
 
   return (
     <Modal visible animationType="slide" transparent>
-      <KeyboardAvoidingView style={styles.scheduleOverlay}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <View style={styles.scheduleOverlay}>
         <View style={styles.scheduleContent}>
           <Text style={styles.scheduleTitle}>📅 Proponer horario de visita</Text>
           <Text style={styles.scheduleSubtitle}>{job.title}</Text>
 
-          <Text style={styles.formLabel}>FECHA (AAAA-MM-DD) *</Text>
-          <TextInput style={styles.input} value={date} onChangeText={setDate}
-            placeholder="2026-06-15" placeholderTextColor={COLORS.muted}
-            keyboardType="numbers-and-punctuation" maxLength={10} />
+          {/* Date selector */}
+          <Text style={styles.formLabel}>FECHA</Text>
+          <TouchableOpacity style={styles.datePickerButton} onPress={() => { setShowDatePicker(true); setShowTimePicker(false); }}>
+            <Text style={styles.datePickerButtonText}>{formatDate(selectedDate)}</Text>
+            <Text style={styles.datePickerChevron}>▼</Text>
+          </TouchableOpacity>
 
-          <Text style={styles.formLabel}>HORA (HH:MM) *</Text>
-          <TextInput style={styles.input} value={time} onChangeText={setTime}
-            placeholder="10:00" placeholderTextColor={COLORS.muted}
-            keyboardType="numbers-and-punctuation" maxLength={5} />
+          {/* Time selector */}
+          <Text style={[styles.formLabel, { marginTop: 12 }]}>HORA</Text>
+          <TouchableOpacity style={styles.datePickerButton} onPress={() => { setShowTimePicker(true); setShowDatePicker(false); }}>
+            <Text style={styles.datePickerButtonText}>{formatTime(selectedDate)}</Text>
+            <Text style={styles.datePickerChevron}>▼</Text>
+          </TouchableOpacity>
 
-          <Text style={styles.formHint}>
+          {/* Inline native pickers (iOS shows scroll wheels, Android shows dialog) */}
+          {showDatePicker && (
+            <DateTimePicker
+              value={selectedDate}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              minimumDate={new Date()}
+              locale="es-MX"
+              onChange={(_, date) => {
+                if (date) {
+                  const merged = new Date(date);
+                  merged.setHours(selectedDate.getHours(), selectedDate.getMinutes());
+                  setSelectedDate(merged);
+                }
+                if (Platform.OS === 'android') setShowDatePicker(false);
+              }}
+              style={{ backgroundColor: COLORS.card }}
+              textColor={COLORS.text}
+              accentColor={COLORS.accent}
+            />
+          )}
+          {showTimePicker && (
+            <DateTimePicker
+              value={selectedDate}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              locale="es-MX"
+              onChange={(_, time) => {
+                if (time) {
+                  const merged = new Date(selectedDate);
+                  merged.setHours(time.getHours(), time.getMinutes());
+                  setSelectedDate(merged);
+                }
+                if (Platform.OS === 'android') setShowTimePicker(false);
+              }}
+              style={{ backgroundColor: COLORS.card }}
+              textColor={COLORS.text}
+              accentColor={COLORS.accent}
+            />
+          )}
+
+          <Text style={[styles.formHint, { marginTop: 12 }]}>
             💡 El otro usuario deberá aceptar el horario para confirmarlo
           </Text>
 
@@ -1209,7 +1272,7 @@ function ScheduleModal({ job, currentUser, otherUserId, chatId, onClose }) {
             </TouchableOpacity>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
@@ -1282,10 +1345,15 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
     try {
       const selectedLocation = MONTERREY_LOCATIONS.find(loc => loc.name === location);
       
-      let imageUrl = imageUri;
+      let imageUrl = null;
       if (imageUri && imageUri.startsWith('file://')) {
-        // Upload image to Firebase Storage
-        imageUrl = await uploadImage(imageUri, `jobs/${Date.now()}.jpg`);
+        try {
+          imageUrl = await uploadImage(imageUri, `jobs/${Date.now()}.jpg`);
+        } catch {
+          return; // uploadImage already showed an alert explaining the issue
+        }
+      } else if (imageUri) {
+        imageUrl = imageUri; // already a remote URL (editing existing job)
       }
       
       const jobData = {
@@ -1860,7 +1928,7 @@ function JobDetailModal({ job, user, onClose, onRefresh, onViewWorkerProfile }) 
                 {job.userName && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <Text style={styles.jobDetailCreator}>Por: {job.userName}</Text>
-                    {isWorker && job.clientRating && job.clientRating > 0 && (
+                    {isWorker && job.clientRating > 0 && (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                         <Text style={{ fontSize: 10 }}>⭐</Text>
                         <Text style={styles.clientRatingText}>{job.clientRating.toFixed(1)}</Text>
@@ -1891,13 +1959,27 @@ function JobDetailModal({ job, user, onClose, onRefresh, onViewWorkerProfile }) 
                   </TouchableOpacity>
                 )}
                 
-                {/* ✅ FIXED: Show map inline, no nested modal needed */}
                 {job.locationShared && job.exactLocation && (
                   <View style={styles.inlineMapBox}>
                     <Text style={styles.inlineMapAddress}>📍 {job.exactLocation.address}</Text>
-                    <Text style={styles.inlineMapCoords}>
-                      {job.exactLocation.lat?.toFixed(5)}, {job.exactLocation.lng?.toFixed(5)}
-                    </Text>
+                    {/* Live map preview */}
+                    <MapView
+                      style={styles.inlineMapView}
+                      initialRegion={{
+                        latitude: job.exactLocation.lat,
+                        longitude: job.exactLocation.lng,
+                        latitudeDelta: 0.005,
+                        longitudeDelta: 0.005,
+                      }}
+                      scrollEnabled={false}
+                      zoomEnabled={false}
+                      pitchEnabled={false}
+                      rotateEnabled={false}
+                    >
+                      <Marker
+                        coordinate={{ latitude: job.exactLocation.lat, longitude: job.exactLocation.lng }}
+                      />
+                    </MapView>
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                       <TouchableOpacity style={[styles.mapActionBtn, { flex: 1 }]} onPress={() => {
                         Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${job.exactLocation.lat},${job.exactLocation.lng}`);
@@ -4390,8 +4472,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.blue + '44',
   },
-  inlineMapAddress: { fontSize: 14, fontWeight: '700', color: COLORS.text, marginBottom: 4 },
+  inlineMapAddress: { fontSize: 14, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
   inlineMapCoords: { fontSize: 11, color: COLORS.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  inlineMapView: { width: '100%', height: 180, borderRadius: 10, marginTop: 4, overflow: 'hidden' },
   mapActionBtn: {
     backgroundColor: COLORS.accent,
     borderRadius: 10,
@@ -4437,6 +4520,18 @@ const styles = StyleSheet.create({
   },
   scheduleTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text },
   scheduleSubtitle: { fontSize: 13, color: COLORS.muted, marginBottom: 8 },
+  datePickerButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: COLORS.bg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    padding: 14,
+  },
+  datePickerButtonText: { fontSize: 15, color: COLORS.text, fontWeight: '600' },
+  datePickerChevron: { fontSize: 11, color: COLORS.muted },
   scheduleCard: {
     backgroundColor: COLORS.card,
     borderRadius: 16,
