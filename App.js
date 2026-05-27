@@ -147,7 +147,7 @@ const MONTERREY_LOCATIONS = [
 const URGENT_JOB_PRICE = 75; // MXN
 
 // 💰 STRIPE CONFIGURATION (For payment processing)
-const STRIPE_PUBLISHABLE_KEY = "pk_live_51TaPhRRqJ0LJg2PAzNcjAM34Z3jm7OBYFdY3xAyfTkNjACN7BchVWJ4Q7NnTvDiMUlq9tlHOuZctRbdWyIdAssxL0052tbR0NE";
+const STRIPE_PUBLISHABLE_KEY = "pk_test_51TaPhRRqJ0LJg2PAY870PLdDHQ1hnIktbrrHBlsJCGlc3ji8boI9QfeT0356dF4rxAhWs2Yl5ItpdTrIMn2TEwCT00JYCPVMw0";
 
 // 🔑 GOOGLE OAUTH — get from Firebase Console → Authentication → Google → Web client ID
 const GOOGLE_WEB_CLIENT_ID = "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com";
