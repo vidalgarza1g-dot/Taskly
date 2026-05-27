@@ -502,6 +502,82 @@ function LocationMapModal({ location, onClose }) {
 }
 
 // 📸 Image Picker Component
+// Multi-media picker for job postings — supports images + videos, swipeable, deletable
+function JobMediaPicker({ items, onChange }) {
+  const MAX_ITEMS = 8;
+
+  const addMedia = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permiso denegado', 'Necesitamos acceso a tu galería para subir fotos y videos.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+      selectionLimit: MAX_ITEMS - items.length,
+    });
+    if (!result.canceled) {
+      const newItems = result.assets.map(asset => ({
+        id: `${Date.now()}_${Math.random()}`,
+        uri: asset.uri,
+        type: asset.type === 'video' ? 'video' : 'image',
+      }));
+      onChange([...items, ...newItems]);
+    }
+  };
+
+  const removeItem = (id) => {
+    Alert.alert('Eliminar', '¿Eliminar este archivo?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => onChange(items.filter(i => i.id !== id)) },
+    ]);
+  };
+
+  return (
+    <View>
+      <Text style={styles.formLabel}>FOTOS / VIDEOS DEL PROBLEMA</Text>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.mediaRowContent}
+      >
+        {items.map(item => (
+          <View key={item.id} style={styles.mediaThumbnail}>
+            {item.type === 'video' ? (
+              <View style={[styles.mediaThumbnailImg, { backgroundColor: '#111', justifyContent: 'center', alignItems: 'center' }]}>
+                <Text style={{ fontSize: 30 }}>▶️</Text>
+              </View>
+            ) : (
+              <Image source={{ uri: item.uri }} style={styles.mediaThumbnailImg} resizeMode="cover" />
+            )}
+            <TouchableOpacity style={styles.mediaDeleteBtn} onPress={() => removeItem(item.id)}>
+              <Text style={styles.mediaDeleteText}>×</Text>
+            </TouchableOpacity>
+            {item.type === 'video' && (
+              <View style={styles.mediaVideoTag}>
+                <Text style={styles.mediaVideoTagText}>VIDEO</Text>
+              </View>
+            )}
+          </View>
+        ))}
+        {items.length < MAX_ITEMS && (
+          <TouchableOpacity style={styles.mediaAddBtn} onPress={addMedia}>
+            <Text style={styles.mediaAddIcon}>＋</Text>
+            <Text style={styles.mediaAddText}>{items.length === 0 ? 'Agregar\nfoto/video' : 'Agregar\nmás'}</Text>
+          </TouchableOpacity>
+        )}
+      </ScrollView>
+      <Text style={styles.formHint}>
+        {items.length === 0
+          ? 'Sube hasta 8 fotos o videos del problema. Desliza para ver todas.'
+          : `${items.length} archivo${items.length > 1 ? 's' : ''} seleccionado${items.length > 1 ? 's' : ''}. Toca × para eliminar.`}
+      </Text>
+    </View>
+  );
+}
+
 function ImagePickerButton({ onImageSelected, currentImage, label = "Agregar foto" }) {
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -1397,7 +1473,12 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
   const [budgetMax, setBudgetMax] = useState(editingJob?.budgetMax?.toString() || '');
   const [isPublic, setIsPublic] = useState(editingJob?.isPublic !== false);
   const [isUrgent, setIsUrgent] = useState(editingJob?.isUrgent || false);
-  const [imageUri, setImageUri] = useState(editingJob?.imageUrl || null);
+  const [mediaItems, setMediaItems] = useState(() => {
+    // Populate from existing job when editing
+    if (editingJob?.images?.length) return editingJob.images.map((img, i) => ({ id: `existing_${i}`, uri: img.url, type: img.type || 'image' }));
+    if (editingJob?.imageUrl) return [{ id: 'existing_0', uri: editingJob.imageUrl, type: 'image' }];
+    return [];
+  });
   const [loading, setLoading] = useState(false);
 
   const isEditing = !!editingJob;
@@ -1440,17 +1521,21 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
     try {
       const selectedLocation = MONTERREY_LOCATIONS.find(loc => loc.name === location);
       
-      let imageUrl = null;
-      if (imageUri && imageUri.startsWith('file://')) {
-        try {
-          imageUrl = await uploadImage(imageUri, `jobs/${Date.now()}.jpg`);
-        } catch {
-          return; // uploadImage already showed an alert explaining the issue
+      // Upload any locally-picked images; skip failed ones gracefully
+      const uploadedImages = [];
+      for (const item of mediaItems) {
+        if (item.uri.startsWith('file://')) {
+          try {
+            const url = await uploadImage(item.uri, `jobs/${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`);
+            uploadedImages.push({ url, type: item.type });
+          } catch {
+            // Storage rules not set yet — skip image but continue posting
+          }
+        } else {
+          uploadedImages.push({ url: item.uri, type: item.type }); // remote URL from editing
         }
-      } else if (imageUri) {
-        imageUrl = imageUri; // already a remote URL (editing existing job)
       }
-      
+
       const jobData = {
         type,
         title,
@@ -1459,7 +1544,8 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
         budgetMax: parseInt(budgetMax),
         isPublic,
         isUrgent: urgentPaid,
-        imageUrl: imageUrl || null,
+        imageUrl: uploadedImages[0]?.url || null,
+        images: uploadedImages,
         estimatedLocation: selectedLocation ? {
           area: selectedLocation.name,
           lat: selectedLocation.lat,
@@ -1519,12 +1605,8 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
           keyboardVerticalOffset={90}
         >
           <ScrollView style={styles.formScroll} contentContainerStyle={styles.formContainer}>
-            {/* Image Upload */}
-            <ImagePickerButton 
-              currentImage={imageUri}
-              onImageSelected={setImageUri}
-              label="Agregar foto del problema"
-            />
+            {/* Multi-media picker */}
+            <JobMediaPicker items={mediaItems} onChange={setMediaItems} />
 
             {/* Privacy Toggle */}
             <View style={styles.privacyContainer}>
@@ -1578,11 +1660,15 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
                   ]}
                   onPress={() => setType(service.id)}
                 >
-                  <Text style={{ fontSize: 28 }}>{service.icon}</Text>
-                  <Text style={[
-                    styles.serviceButtonText,
-                    type === service.id && { color: service.color }
-                  ]}>
+                  <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 26, textAlign: 'center' }}>{service.icon}</Text>
+                  </View>
+                  <Text
+                    style={[styles.serviceButtonText, type === service.id && { color: service.color }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.7}
+                  >
                     {service.label}
                   </Text>
                 </TouchableOpacity>
@@ -2438,6 +2524,191 @@ function WorkersDirectoryScreen({ onClose, onSelectWorker }) {
 }
 
 // Profile Screen (with image upload)
+// Settings helpers
+function SettingsRow({ icon, title, subtitle, rightElement, onPress, destructive = false, disabled = false }) {
+  const inner = (
+    <View style={[styles.settingsRow, disabled && { opacity: 0.45 }]}>
+      <View style={styles.settingsRowIcon}>
+        <Text style={{ fontSize: 18 }}>{icon}</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.settingsRowTitle, destructive && { color: COLORS.red }]}>{title}</Text>
+        {subtitle ? <Text style={styles.settingsRowSubtitle}>{subtitle}</Text> : null}
+      </View>
+      {rightElement ? rightElement : (onPress && !disabled ? <Text style={styles.settingsRowChevron}>›</Text> : null)}
+    </View>
+  );
+  if (onPress && !disabled) return <TouchableOpacity onPress={onPress}>{inner}</TouchableOpacity>;
+  return inner;
+}
+
+function SettingsScreen({ user, userProfile, onClose, onEditProfile }) {
+  const [notifPush, setNotifPush] = useState(true);
+  const [notifChat, setNotifChat] = useState(true);
+  const [notifJobs, setNotifJobs] = useState(true);
+
+  useEffect(() => {
+    AsyncStorage.getItem('notif_push').then(v => v !== null && setNotifPush(v === 'true'));
+    AsyncStorage.getItem('notif_chat').then(v => v !== null && setNotifChat(v === 'true'));
+    AsyncStorage.getItem('notif_jobs').then(v => v !== null && setNotifJobs(v === 'true'));
+  }, []);
+
+  const saveNotif = async (key, setter, value) => {
+    setter(value);
+    await AsyncStorage.setItem(key, String(value));
+  };
+
+  const handleSignOut = () =>
+    Alert.alert('Cerrar sesión', '¿Estás seguro?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Cerrar sesión', style: 'destructive', onPress: () => signOut(auth) },
+    ]);
+
+  const handleDeleteAccount = () =>
+    Alert.alert('Eliminar cuenta', 'Esta acción es irreversible. Todos tus datos serán eliminados.', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Eliminar mi cuenta',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteDoc(doc(db, 'users', user.id));
+            await auth.currentUser.delete();
+          } catch {
+            Alert.alert('Error', 'Cierra sesión, vuelve a iniciar y luego intenta eliminar la cuenta.');
+          }
+        },
+      },
+    ]);
+
+  const clearCache = () =>
+    Alert.alert('Limpiar caché', '¿Borrar preferencias y datos temporales?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Limpiar',
+        onPress: async () => {
+          await AsyncStorage.multiRemove(['notif_push', 'notif_chat', 'notif_jobs']);
+          setNotifPush(true); setNotifChat(true); setNotifJobs(true);
+          Alert.alert('✓ Caché limpiado');
+        },
+      },
+    ]);
+
+  const verifyLabel = { unverified: '❌ Sin verificar', pending: '⏳ En revisión', verified: '✓ Verificado' };
+  const verifyStatus = verifyLabel[userProfile?.verificationStatus] || '❌ Sin verificar';
+
+  const switchProps = (value, setter, key) => ({
+    rightElement: (
+      <Switch
+        value={value}
+        onValueChange={v => saveNotif(key, setter, v)}
+        trackColor={{ false: COLORS.border, true: COLORS.accent }}
+        thumbColor="#fff"
+      />
+    ),
+  });
+
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={onClose}>
+            <Text style={styles.closeButton}>← Volver</Text>
+          </TouchableOpacity>
+          <Text style={styles.modalTitle}>Configuración</Text>
+          <View style={{ width: 80 }} />
+        </View>
+
+        <ScrollView contentContainerStyle={styles.settingsScroll}>
+
+          {/* CUENTA */}
+          <Text style={styles.settingsSectionLabel}>CUENTA</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow icon="👤" title="Editar perfil" subtitle="Nombre, foto, descripción" onPress={onEditProfile} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="📧" title={user.email || user.phone || 'Sin contacto registrado'} disabled />
+            {user.role === 'worker' && <>
+              <View style={styles.settingsDivider} />
+              <SettingsRow icon="🪪" title="Verificación de identidad" subtitle={verifyStatus} onPress={onEditProfile} />
+            </>}
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="🚪" title="Cerrar sesión" onPress={handleSignOut} destructive />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="🗑" title="Eliminar cuenta" subtitle="Acción irreversible" onPress={handleDeleteAccount} destructive />
+          </View>
+
+          {/* NOTIFICACIONES */}
+          <Text style={styles.settingsSectionLabel}>NOTIFICACIONES</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow icon="🔔" title="Notificaciones push" {...switchProps(notifPush, setNotifPush, 'notif_push')} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="💬" title="Mensajes de chat" {...switchProps(notifChat, setNotifChat, 'notif_chat')} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow
+              icon="📋"
+              title={user.role === 'client' ? 'Propuestas recibidas' : 'Actualizaciones de trabajos'}
+              {...switchProps(notifJobs, setNotifJobs, 'notif_jobs')}
+            />
+          </View>
+
+          {/* PRIVACIDAD Y SEGURIDAD */}
+          <Text style={styles.settingsSectionLabel}>PRIVACIDAD Y SEGURIDAD</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow icon="📍" title="Permiso de ubicación" subtitle="Gestionar en Ajustes del sistema" onPress={() => Linking.openSettings()} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="📷" title="Permiso de cámara y galería" subtitle="Gestionar en Ajustes del sistema" onPress={() => Linking.openSettings()} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow
+              icon="🔐"
+              title="Face ID / Touch ID"
+              subtitle="Próximamente disponible"
+              disabled
+              rightElement={<Switch value={false} disabled trackColor={{ false: COLORS.border }} thumbColor="#fff" />}
+            />
+          </View>
+
+          {/* PAGOS */}
+          <Text style={styles.settingsSectionLabel}>PAGOS</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow icon="💳" title="Historial de pagos" subtitle="Próximamente disponible" disabled />
+          </View>
+
+          {/* AYUDA Y SOPORTE */}
+          <Text style={styles.settingsSectionLabel}>AYUDA Y SOPORTE</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow
+              icon="❓"
+              title="Preguntas frecuentes"
+              onPress={() => Alert.alert('Preguntas frecuentes',
+                '¿Cómo publico un trabajo?\nToca el botón "+" y llena el formulario.\n\n¿Cómo contacto a un trabajador?\nDesde el detalle del trabajo, abre el chat.\n\n¿Qué es un trabajo urgente?\nDestaca tu trabajo por $75 MXN para que aparezca al inicio.\n\n¿Cómo califico a un trabajador?\nUna vez completado el trabajo se solicita una reseña.\n\n¿Cómo verifico mi cuenta?\nVe a Perfil → Verificación de identidad y sube tu INE.'
+              )}
+            />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="📞" title="Contactar soporte" subtitle="soporte@taskly.mx" onPress={() => Linking.openURL('mailto:soporte@taskly.mx?subject=Soporte Taskly')} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="🚩" title="Reportar un problema" onPress={() => Linking.openURL('mailto:soporte@taskly.mx?subject=Reporte de problema')} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="📄" title="Términos de servicio" onPress={() => Alert.alert('Términos de servicio', 'Disponibles próximamente en taskly.mx/terminos')} />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="🔒" title="Política de privacidad" onPress={() => Alert.alert('Política de privacidad', 'Disponible próximamente en taskly.mx/privacidad')} />
+          </View>
+
+          {/* ACERCA DE */}
+          <Text style={styles.settingsSectionLabel}>ACERCA DE</Text>
+          <View style={styles.settingsCard}>
+            <SettingsRow icon="ℹ️" title="Taskly" subtitle="Versión 1.0.0 · Monterrey, México" disabled />
+            <View style={styles.settingsDivider} />
+            <SettingsRow icon="🗑" title="Limpiar caché" subtitle="Borra preferencias y datos temporales" onPress={clearCache} />
+          </View>
+
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
 // Worker identity verification — INE upload + status display
 function IneVerificationSection({ userId, userProfile, onRefresh }) {
   const status = userProfile?.verificationStatus || 'unverified';
@@ -2533,6 +2804,7 @@ function ProfileScreen({ user, onClose }) {
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [name, setName] = useState('');
   const [bio, setBio] = useState('');
   const [profileImage, setProfileImage] = useState(null);
@@ -2607,10 +2879,24 @@ function ProfileScreen({ user, onClose }) {
             <Text style={styles.closeButton}>← Cerrar</Text>
           </TouchableOpacity>
           <Text style={styles.modalTitle}>Mi Perfil</Text>
-          <TouchableOpacity onPress={() => setEditing(!editing)}>
-            <Text style={styles.closeButton}>{editing ? 'Cancelar' : 'Editar'}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+            <TouchableOpacity onPress={() => setEditing(!editing)}>
+              <Text style={styles.closeButton}>{editing ? 'Cancelar' : 'Editar'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowSettings(true)}>
+              <Text style={{ fontSize: 22 }}>⚙️</Text>
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {showSettings && (
+          <SettingsScreen
+            user={user}
+            userProfile={userProfile}
+            onClose={() => setShowSettings(false)}
+            onEditProfile={() => { setShowSettings(false); setEditing(true); }}
+          />
+        )}
 
         {loading ? (
           <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -4428,17 +4714,18 @@ const styles = StyleSheet.create({
   urgentTitle: { fontSize: 16, fontWeight: '700', color: COLORS.accent, marginBottom: 4 },
   urgentSubtitle: { fontSize: 12, color: COLORS.accent, lineHeight: 16 },
   
-  serviceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8 },
+  serviceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 8, justifyContent: 'space-between' },
   serviceButton: {
-    width: '31%',
-    aspectRatio: 1,
+    width: '30%',
+    paddingVertical: 14,
+    paddingHorizontal: 6,
     backgroundColor: COLORS.card,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   serviceButtonText: { fontSize: 11, fontWeight: '700', color: COLORS.text, textAlign: 'center' },
   
@@ -5006,6 +5293,92 @@ const styles = StyleSheet.create({
   ineImageLabel: { color: COLORS.muted, fontSize: 13, textAlign: 'center', lineHeight: 20 },
 
   // sectionHeader already defined above
+
+  // ✅ Multi-media picker
+  mediaRowContent: { flexDirection: 'row', gap: 10, paddingBottom: 8 },
+  mediaThumbnail: {
+    width: 100,
+    height: 100,
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  mediaThumbnailImg: { width: '100%', height: '100%', borderRadius: 12 },
+  mediaDeleteBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mediaDeleteText: { color: '#fff', fontSize: 16, fontWeight: '900', lineHeight: 20 },
+  mediaVideoTag: {
+    position: 'absolute',
+    bottom: 4,
+    left: 4,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  mediaVideoTagText: { color: '#fff', fontSize: 9, fontWeight: '800' },
+  mediaAddBtn: {
+    width: 100,
+    height: 100,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: COLORS.accent + '66',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.card,
+    gap: 4,
+  },
+  mediaAddIcon: { fontSize: 28, color: COLORS.accent },
+  mediaAddText: { fontSize: 11, color: COLORS.accent, fontWeight: '700', textAlign: 'center' },
+
+  // ✅ Settings screen
+  settingsScroll: { paddingHorizontal: 16, paddingTop: 8 },
+  settingsSectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.muted,
+    letterSpacing: 1,
+    marginTop: 20,
+    marginBottom: 8,
+    marginLeft: 4,
+  },
+  settingsCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 14,
+    minHeight: 56,
+  },
+  settingsRowIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: COLORS.bg,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settingsRowTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text },
+  settingsRowSubtitle: { fontSize: 12, color: COLORS.muted, marginTop: 2 },
+  settingsRowChevron: { fontSize: 22, color: COLORS.muted, fontWeight: '300' },
+  settingsDivider: { height: 1, backgroundColor: COLORS.border, marginLeft: 62 },
 
   // ✅ Social auth buttons
   appleButton: {
