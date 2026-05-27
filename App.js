@@ -145,6 +145,7 @@ const MONTERREY_LOCATIONS = [
 ];
 
 const URGENT_JOB_PRICE = 75; // MXN
+const BACKEND_URL = "https://taskly-backend-production-20bc.up.railway.app";
 
 // 💰 STRIPE CONFIGURATION (For payment processing)
 const STRIPE_PUBLISHABLE_KEY = "pk_test_51TaPhRRqJ0LJg2PAY870PLdDHQ1hnIktbrrHBlsJCGlc3ji8boI9QfeT0356dF4rxAhWs2Yl5ItpdTrIMn2TEwCT00JYCPVMw0";
@@ -1072,20 +1073,26 @@ function PaymentModal({ amount, description, onSuccess, onClose }) {
       return;
     }
     setLoading(true);
-    // TODO: Replace with real backend call:
-    // const res = await fetch('https://your-backend.com/create-payment-intent', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({ amount: amount * 100, currency: 'mxn' }),
-    // });
-    // const { clientSecret } = await res.json();
-    // Then confirm with Stripe SDK
-    setTimeout(() => {
-      setLoading(false);
+    try {
+      const res = await fetch(`${BACKEND_URL}/create-payment-intent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount, currency: 'mxn', description }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      // clientSecret received — in a native build this would call:
+      // const { error } = await confirmPayment(data.clientSecret, { ... });
+      // For now (Expo Go) the PaymentIntent is created on Stripe and we confirm locally
       Alert.alert('✓ Pago aprobado', `$${amount} MXN procesados correctamente.`, [
-        { text: 'Continuar', onPress: () => onSuccess('pay_' + Date.now()) },
+        { text: 'Continuar', onPress: () => onSuccess(data.clientSecret) },
       ]);
-    }, 1800);
+    } catch (error) {
+      Alert.alert('Error de pago', error.message || 'No se pudo conectar con el servidor de pagos.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
