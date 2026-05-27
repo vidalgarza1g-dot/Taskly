@@ -86,7 +86,8 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, Polygon } from 'react-native-maps';
+import { Share } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 // 🔥 FIREBASE CONFIG
@@ -171,6 +172,7 @@ const createNotification = async (userId, type, actorName = '', extra = {}) => {
     review_received:  `⭐ ${actorName} te dejó ${extra.rating || ''} estrellas: "${extra.review || 'Sin comentario'}"`,
     schedule_proposed:`📅 ${actorName} propuso visita el ${extra.date || ''} a las ${extra.time || ''} para "${extra.jobTitle || ''}"`,
     schedule_agreed:  `📅 ¡Confirmado! ${actorName} aceptó visita el ${extra.date || ''} a las ${extra.time || ''}`,
+    direct_proposal:  `📩 ${actorName} te propuso un trabajo directo: "${extra.jobTitle || ''}"`,
   };
   try {
     await addDoc(collection(db, 'notifications'), {
@@ -741,6 +743,17 @@ function WorkerCard({ worker, onPress, showReviews = false }) {
           <Text style={styles.workerBio} numberOfLines={2}>{worker.bio}</Text>
         )}
         
+        {worker.specialties?.length > 0 && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+            {worker.specialties.slice(0, 3).map(id => {
+              const s = SERVICES.find(x => x.id === id);
+              return s ? <Text key={id} style={[styles.specialtyChip, { backgroundColor: s.color + '22', color: s.color }]}>{s.icon} {s.label}</Text> : null;
+            })}
+          </View>
+        )}
+        {worker.businessName && (
+          <Text style={styles.workerBusiness}>🏢 {worker.businessName}</Text>
+        )}
         {showReviews && worker.topReview && (
           <View style={styles.workerTopReview}>
             <StarRating rating={worker.topReview.rating} size={12} />
@@ -1464,7 +1477,7 @@ const addToCalendar = (title, dateStr, timeStr, address) => {
 };
 
 // Post Job Screen (with image upload and location picker)
-function PostJobScreen({ user, onClose, editingJob = null }) {
+function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }) {
   const [type, setType] = useState(editingJob?.type || '');
   const [title, setTitle] = useState(editingJob?.title || '');
   const [description, setDescription] = useState(editingJob?.description || '');
@@ -1558,7 +1571,7 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
         await updateDoc(jobRef, jobData);
         Alert.alert('✓ Actualizado!', 'Tu trabajo fue actualizado');
       } else {
-        await addDoc(collection(db, 'jobs'), {
+        const newJobRef = await addDoc(collection(db, 'jobs'), {
           ...jobData,
           userId: user.id,
           userEmail: user.email,
@@ -1571,7 +1584,11 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
           locationShared: false,
           urgentPaidAt: urgentPaid ? serverTimestamp() : null,
           urgentPaymentId: paymentId,
+          directWorkerId: targetWorker?.id || null,
         });
+        if (targetWorker) {
+          await createNotification(targetWorker.id, 'direct_proposal', user.name, { jobTitle: title, jobId: newJobRef.id });
+        }
         
         const urgentText = urgentPaid ? ' como URGENTE' : '';
         Alert.alert('✓ Publicado!', `Tu trabajo fue publicado${urgentText}`);
@@ -1605,6 +1622,16 @@ function PostJobScreen({ user, onClose, editingJob = null }) {
           keyboardVerticalOffset={90}
         >
           <ScrollView style={styles.formScroll} contentContainerStyle={styles.formContainer}>
+            {/* Direct proposal banner */}
+            {targetWorker && (
+              <View style={[styles.infoBox, { borderColor: COLORS.accent + '66', backgroundColor: COLORS.accent + '11' }]}>
+                <Text style={[styles.infoText, { color: COLORS.accent, fontWeight: '700' }]}>
+                  📩 Propuesta directa para {targetWorker.name}
+                </Text>
+                <Text style={styles.formHint}>Este trabajador recibirá una notificación especial con tu trabajo.</Text>
+              </View>
+            )}
+
             {/* Multi-media picker */}
             <JobMediaPicker items={mediaItems} onChange={setMediaItems} />
 
@@ -2324,6 +2351,24 @@ function JobDetailModal({ job, user, onClose, onRefresh, onViewWorkerProfile }) 
 }
 
 // Worker Profile Modal (with rating hide/show toggle)
+function DirectProposalButton({ worker, client }) {
+  const [showPost, setShowPost] = useState(false);
+  return (
+    <>
+      <TouchableOpacity style={[styles.primaryButton, { marginTop: 16 }]} onPress={() => setShowPost(true)}>
+        <Text style={styles.primaryButtonText}>📩 Proponer trabajo directo</Text>
+      </TouchableOpacity>
+      {showPost && (
+        <PostJobScreen
+          user={client}
+          targetWorker={worker}
+          onClose={() => setShowPost(false)}
+        />
+      )}
+    </>
+  );
+}
+
 function WorkerProfileModal({ worker, currentUser, onClose }) {
   const [ratings, setRatings] = useState([]);
   const [hiddenIds, setHiddenIds] = useState(new Set(worker.hiddenRatings || []));
@@ -2389,6 +2434,45 @@ function WorkerProfileModal({ worker, currentUser, onClose }) {
               </View>
             )}
             {worker.bio && <Text style={styles.workerProfileBio}>{worker.bio}</Text>}
+
+            {/* Specialties */}
+            {worker.specialties?.length > 0 && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12, justifyContent: 'center' }}>
+                {worker.specialties.map(id => { const s = SERVICES.find(x => x.id === id); return s ? <Text key={id} style={[styles.specialtyChip, { backgroundColor: s.color + '22', color: s.color }]}>{s.icon} {s.label}</Text> : null; })}
+              </View>
+            )}
+
+            {/* Service areas */}
+            {worker.serviceAreas?.length > 0 && (
+              <View style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={styles.formLabel}>ÁREA DE SERVICIO</Text>
+                <Text style={{ color: COLORS.muted, fontSize: 13, textAlign: 'center' }}>{worker.serviceAreas.join(' · ')}{worker.workOutsideArea ? ' · y más' : ''}</Text>
+              </View>
+            )}
+
+            {/* Availability */}
+            {worker.availability?.days?.length > 0 && (
+              <View style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={styles.formLabel}>DISPONIBILIDAD</Text>
+                <Text style={{ color: COLORS.muted, fontSize: 13 }}>
+                  {['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'].filter((_, i) => worker.availability.days.includes(i)).join(', ')}
+                  {worker.availability.startTime ? ` · ${worker.availability.startTime} – ${worker.availability.endTime}` : ''}
+                </Text>
+              </View>
+            )}
+
+            {/* Business badge */}
+            {worker.businessName && (
+              <View style={{ marginTop: 12, backgroundColor: COLORS.card, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <Text style={{ fontSize: 18 }}>🏢</Text>
+                <Text style={{ color: COLORS.text, fontWeight: '700' }}>{worker.businessName}</Text>
+              </View>
+            )}
+
+            {/* Direct proposal button (clients only, viewing another worker) */}
+            {currentUser.role === 'client' && !isOwnProfile && (
+              <DirectProposalButton worker={worker} client={currentUser} />
+            )}
           </View>
 
           {/* ✅ Hidden ratings section (only visible to the worker) */}
@@ -2805,9 +2889,15 @@ function ProfileScreen({ user, onClose }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWorkArea, setShowWorkArea] = useState(false);
+  const [showBusiness, setShowBusiness] = useState(false);
+  const [showCreateBusiness, setShowCreateBusiness] = useState(false);
+  const [businessData, setBusinessData] = useState(null);
   const [name, setName] = useState('');
   const [bio, setBio] = useState('');
   const [profileImage, setProfileImage] = useState(null);
+  const [specialties, setSpecialties] = useState([]);
+  const [availability, setAvailability] = useState({ days: [], startTime: '08:00', endTime: '18:00' });
 
   useEffect(() => {
     loadProfile();
@@ -2822,6 +2912,12 @@ function ProfileScreen({ user, onClose }) {
         setName(profile.name || '');
         setBio(profile.bio || '');
         setProfileImage(profile.profileImage || null);
+        setSpecialties(profile.specialties || []);
+        setAvailability(profile.availability || { days: [], startTime: '08:00', endTime: '18:00' });
+        if (profile.businessId) {
+          const bSnap = await getDoc(doc(db, 'businesses', profile.businessId));
+          if (bSnap.exists()) setBusinessData({ id: bSnap.id, ...bSnap.data() });
+        }
       }
       setLoading(false);
     } catch (error) {
@@ -2853,6 +2949,8 @@ function ProfileScreen({ user, onClose }) {
       const update = {
         name: name.trim(),
         bio: bio.trim(),
+        specialties,
+        availability,
         updatedAt: serverTimestamp(),
       };
       if (imageUrl !== null) update.profileImage = imageUrl;
@@ -2979,6 +3077,67 @@ function ProfileScreen({ user, onClose }) {
                   />
 
                   {user.role === 'worker' && (
+                    <>
+                      {/* Specialties */}
+                      <Text style={styles.formLabel}>MIS ESPECIALIDADES</Text>
+                      <View style={styles.serviceGrid}>
+                        {SERVICES.map(s => (
+                          <TouchableOpacity key={s.id} onPress={() => setSpecialties(p => p.includes(s.id) ? p.filter(x => x !== s.id) : [...p, s.id])}
+                            style={[styles.serviceButton, specialties.includes(s.id) && { backgroundColor: s.color + '22', borderColor: s.color }]}>
+                            <Text style={{ fontSize: 22 }}>{s.icon}</Text>
+                            <Text style={[styles.serviceButtonText, specialties.includes(s.id) && { color: s.color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{s.label}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+
+                      {/* Availability */}
+                      <Text style={styles.formLabel}>DÍAS DISPONIBLES</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        {['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'].map((day, i) => (
+                          <TouchableOpacity key={i} onPress={() => setAvailability(a => ({ ...a, days: a.days.includes(i) ? a.days.filter(d => d !== i) : [...a.days, i] }))}
+                            style={[styles.filterChip, availability.days.includes(i) && styles.filterChipActive]}>
+                            <Text style={[styles.filterChipText, availability.days.includes(i) && styles.filterChipTextActive]}>{day}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.formLabel}>HORA INICIO</Text>
+                          <TextInput style={styles.input} value={availability.startTime} onChangeText={t => setAvailability(a => ({ ...a, startTime: t }))} placeholder="08:00" placeholderTextColor={COLORS.muted} keyboardType="numbers-and-punctuation" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.formLabel}>HORA FIN</Text>
+                          <TextInput style={styles.input} value={availability.endTime} onChangeText={t => setAvailability(a => ({ ...a, endTime: t }))} placeholder="18:00" placeholderTextColor={COLORS.muted} keyboardType="numbers-and-punctuation" />
+                        </View>
+                      </View>
+
+                      {/* Work area */}
+                      <TouchableOpacity style={[styles.primaryButton, { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }]} onPress={() => setShowWorkArea(true)}>
+                        <Text style={[styles.primaryButtonText, { color: COLORS.text }]}>
+                          📍 {userProfile?.serviceAreas?.length ? `${userProfile.serviceAreas.length} zona${userProfile.serviceAreas.length > 1 ? 's' : ''} seleccionada${userProfile.serviceAreas.length > 1 ? 's' : ''}` : 'Configurar área de servicio'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {/* Business */}
+                      {businessData ? (
+                        <TouchableOpacity style={[styles.primaryButton, { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }]} onPress={() => setShowBusiness(true)}>
+                          <Text style={[styles.primaryButtonText, { color: COLORS.text }]}>🏢 {businessData.name}</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity style={[styles.primaryButton, { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }]} onPress={() => setShowCreateBusiness(true)}>
+                          <Text style={[styles.primaryButtonText, { color: COLORS.text }]}>🏢 Crear empresa o unirme a una</Text>
+                        </TouchableOpacity>
+                      )}
+                    </>
+                  )}
+
+                  {/* Invite */}
+                  <TouchableOpacity style={[styles.primaryButton, { backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border }]}
+                    onPress={() => Share.share({ message: `Únete a Taskly — la app de servicios del hogar en Monterrey 🔧\nhttps://taskly.mx` })}>
+                    <Text style={[styles.primaryButtonText, { color: COLORS.text }]}>🔗 Invitar a un amigo</Text>
+                  </TouchableOpacity>
+
+                  {user.role === 'worker' && (
                     <View style={styles.infoBox}>
                       <Text style={styles.infoLabel}>VISTA PREVIA</Text>
                       <Text style={styles.formHint}>
@@ -3036,6 +3195,26 @@ function ProfileScreen({ user, onClose }) {
               {user.role === 'worker' && (
                 <IneVerificationSection userId={user.id} userProfile={userProfile} onRefresh={loadProfile} />
               )}
+
+        {showWorkArea && (
+          <WorkAreaPickerModal
+            currentAreas={userProfile?.serviceAreas}
+            currentPolygon={userProfile?.servicePolygon}
+            currentOutside={userProfile?.workOutsideArea}
+            onClose={() => setShowWorkArea(false)}
+            onConfirm={async (data) => {
+              await updateDoc(doc(db, 'users', user.id), data);
+              setShowWorkArea(false);
+              loadProfile();
+            }}
+          />
+        )}
+        {showBusiness && businessData && (
+          <BusinessProfileModal business={businessData} currentUser={user} onClose={() => setShowBusiness(false)} />
+        )}
+        {showCreateBusiness && (
+          <CreateBusinessScreen currentUser={user} onClose={() => setShowCreateBusiness(false)} onSaved={() => { setShowCreateBusiness(false); loadProfile(); }} />
+        )}
             </ScrollView>
           </KeyboardAvoidingView>
         )}
@@ -3158,6 +3337,343 @@ function NotificationsScreen({ user, onClose, onOpenJob }) {
             )}
           />
         )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// ─── Onboarding ──────────────────────────────────────────────────────────────
+function OnboardingScreen({ role, onDone }) {
+  const [page, setPage] = useState(0);
+  const slides = role === 'client' ? [
+    { icon: '📋', title: 'Publica tu trabajo', desc: 'Describe el problema, agrega fotos y fija tu presupuesto. Recibirás propuestas de trabajadores calificados en minutos.' },
+    { icon: '👷', title: 'Compara y elige', desc: 'Revisa perfiles verificados, calificaciones reales y propuestas. Chatea con los trabajadores antes de contratar.' },
+    { icon: '✅', title: 'Trabajo garantizado', desc: 'Coordina el horario, confirma la cita y califica al trabajador al terminar.' },
+  ] : [
+    { icon: '🔍', title: 'Encuentra trabajos', desc: 'Explora solicitudes en Monterrey. Filtra por tu especialidad y área de servicio.' },
+    { icon: '💬', title: 'Propón tu precio', desc: 'Envía tu mejor oferta y chatea con el cliente. Muestra tu experiencia.' },
+    { icon: '⭐', title: 'Crece tu reputación', desc: 'Cada trabajo completado suma calificaciones. Un perfil verificado con buenas calificaciones atrae más clientes.' },
+  ];
+  const handleDone = async () => { await AsyncStorage.setItem('taskly_onboarded', 'true'); onDone(); };
+  return (
+    <SafeAreaView style={styles.onboardingContainer}>
+      <StatusBar barStyle="light-content" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+        <Text style={styles.onboardingIcon}>{slides[page].icon}</Text>
+        <Text style={styles.onboardingTitle}>{slides[page].title}</Text>
+        <Text style={styles.onboardingDesc}>{slides[page].desc}</Text>
+      </View>
+      <View style={styles.onboardingDots}>
+        {slides.map((_, i) => <View key={i} style={[styles.onboardingDot, i === page && styles.onboardingDotActive]} />)}
+      </View>
+      <View style={styles.onboardingActions}>
+        {page < slides.length - 1 ? (
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <TouchableOpacity style={styles.onboardingSkipBtn} onPress={handleDone}>
+              <Text style={styles.onboardingSkipText}>Omitir</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.primaryButton, { flex: 1 }]} onPress={() => setPage(p => p + 1)}>
+              <Text style={styles.primaryButtonText}>Siguiente →</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.primaryButton} onPress={handleDone}>
+            <Text style={styles.primaryButtonText}>¡Comenzar ahora!</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+// ─── Image Gallery (full-screen swipeable) ────────────────────────────────────
+function ImageGalleryModal({ images, initialIndex = 0, onClose }) {
+  const [idx, setIdx] = useState(initialIndex);
+  const { width } = Dimensions.get('window');
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    if (initialIndex > 0) setTimeout(() => scrollRef.current?.scrollTo({ x: initialIndex * width, animated: false }), 50);
+  }, []);
+  if (!images?.length) return null;
+  return (
+    <Modal visible animationType="fade" statusBarTranslucent>
+      <View style={{ flex: 1, backgroundColor: '#000' }}>
+        <SafeAreaView style={{ flex: 1 }}>
+          <TouchableOpacity style={styles.galleryCloseBtn} onPress={onClose}>
+            <Text style={styles.galleryCloseTxt}>✕</Text>
+          </TouchableOpacity>
+          <Text style={styles.galleryCounter}>{idx + 1} / {images.length}</Text>
+          <ScrollView
+            ref={scrollRef} horizontal pagingEnabled showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={e => setIdx(Math.round(e.nativeEvent.contentOffset.x / width))}
+            style={{ flex: 1 }}
+          >
+            {images.map((img, i) => (
+              <View key={i} style={{ width, flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                <Image source={{ uri: img.url || img.uri }} style={{ width, height: width * 1.3 }} resizeMode="contain" />
+              </View>
+            ))}
+          </ScrollView>
+          <View style={styles.galleryDots}>
+            {images.map((_, i) => <View key={i} style={[styles.galleryDot, i === idx && styles.galleryDotActive]} />)}
+          </View>
+        </SafeAreaView>
+      </View>
+    </Modal>
+  );
+}
+
+// ─── Work Area Picker ─────────────────────────────────────────────────────────
+function WorkAreaPickerModal({ currentAreas, currentPolygon, currentOutside, onConfirm, onClose }) {
+  const [selectedAreas, setSelectedAreas] = useState(currentAreas || []);
+  const [polygon, setPolygon] = useState(currentPolygon || []);
+  const [drawMode, setDrawMode] = useState(false);
+  const [workOutside, setWorkOutside] = useState(currentOutside || false);
+  const toggleArea = (n) => setSelectedAreas(p => p.includes(n) ? p.filter(a => a !== n) : [...p, n]);
+  const handleMapPress = (e) => { if (drawMode) setPolygon(p => [...p, e.nativeEvent.coordinate]); };
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cancelar</Text></TouchableOpacity>
+          <Text style={styles.modalTitle}>Área de servicio</Text>
+          <TouchableOpacity onPress={() => onConfirm({ serviceAreas: selectedAreas, servicePolygon: polygon, workOutsideArea: workOutside })}>
+            <Text style={[styles.closeButton, { color: COLORS.green }]}>Guardar</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
+          <Text style={styles.formLabel}>ZONAS DE MONTERREY</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {MONTERREY_LOCATIONS.map(loc => (
+              <TouchableOpacity key={loc.name} onPress={() => toggleArea(loc.name)}
+                style={[styles.filterChip, { paddingVertical: 10 }, selectedAreas.includes(loc.name) && styles.filterChipActive]}>
+                <Text style={[styles.filterChipText, selectedAreas.includes(loc.name) && styles.filterChipTextActive]}>📍 {loc.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.privacyContainer}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.privacyTitle}>🌎 Trabajo fuera de mi zona</Text>
+              <Text style={styles.privacySubtitle}>Disponible para trabajos fuera de las áreas marcadas</Text>
+            </View>
+            <Switch value={workOutside} onValueChange={setWorkOutside} trackColor={{ false: COLORS.border, true: COLORS.accent }} thumbColor="#fff" />
+          </View>
+          <Text style={styles.formLabel}>ÁREA PERSONALIZADA EN MAPA</Text>
+          <Text style={styles.formHint}>{drawMode ? `${polygon.length} puntos. Toca el mapa para agregar más.` : 'Activa el modo dibujo y toca el mapa para trazar tu área exacta.'}</Text>
+          <View style={{ height: 260, borderRadius: 14, overflow: 'hidden' }}>
+            <MapView
+              style={{ flex: 1 }}
+              initialRegion={{ latitude: 25.6866, longitude: -100.3161, latitudeDelta: 0.25, longitudeDelta: 0.25 }}
+              onPress={handleMapPress}
+            >
+              {polygon.length >= 3 && <Polygon coordinates={polygon} fillColor={COLORS.accent + '33'} strokeColor={COLORS.accent} strokeWidth={2} />}
+              {polygon.map((p, i) => (
+                <Marker key={i} coordinate={p} anchor={{ x: 0.5, y: 0.5 }}>
+                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.accent }} />
+                </Marker>
+              ))}
+            </MapView>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <TouchableOpacity onPress={() => setDrawMode(d => !d)}
+              style={[styles.primaryButton, { flex: 1, backgroundColor: drawMode ? COLORS.green : COLORS.card, borderWidth: 1, borderColor: drawMode ? COLORS.green : COLORS.border }]}>
+              <Text style={[styles.primaryButtonText, !drawMode && { color: COLORS.text }]}>{drawMode ? '✓ Dibujando...' : '✏️ Activar dibujo'}</Text>
+            </TouchableOpacity>
+            {polygon.length > 0 && (
+              <TouchableOpacity onPress={() => setPolygon([])} style={[styles.primaryButton, { flex: 1, backgroundColor: COLORS.red }]}>
+                <Text style={styles.primaryButtonText}>🗑 Limpiar</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// ─── Business Pages ───────────────────────────────────────────────────────────
+function BusinessCard({ business, onPress }) {
+  const serviceLabels = (business.services || []).slice(0, 3).map(id => SERVICES.find(s => s.id === id)).filter(Boolean);
+  return (
+    <TouchableOpacity style={styles.businessCard} onPress={() => onPress(business)}>
+      {business.logo
+        ? <Image source={{ uri: business.logo }} style={styles.businessLogo} />
+        : <View style={[styles.businessLogo, { backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }]}><Text style={{ fontSize: 26 }}>🏢</Text></View>}
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Text style={styles.businessName}>{business.name}</Text>
+          <View style={styles.verifiedBadge}><Text style={styles.verifiedBadgeText}>✓</Text></View>
+        </View>
+        <Text style={styles.businessMeta}>{(business.memberIds?.length || 1)} trabajador{(business.memberIds?.length || 1) !== 1 ? 'es' : ''}</Text>
+        {serviceLabels.length > 0 && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+            {serviceLabels.map(s => <Text key={s.id} style={styles.specialtyChip}>{s.icon} {s.label}</Text>)}
+          </View>
+        )}
+        {business.description ? <Text style={styles.businessDesc} numberOfLines={2}>{business.description}</Text> : null}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function BusinessProfileModal({ business: initialBusiness, currentUser, onClose }) {
+  const [business, setBusiness] = useState(initialBusiness);
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const isOwner = currentUser.id === business.ownerId;
+
+  useEffect(() => {
+    const loadMembers = async () => {
+      try {
+        const ids = [business.ownerId, ...(business.memberIds || []).filter(id => id !== business.ownerId)];
+        const docs = await Promise.all(ids.map(id => getDoc(doc(db, 'users', id))));
+        setMembers(docs.filter(d => d.exists()).map(d => ({ id: d.id, ...d.data() })));
+      } catch {}
+      setLoading(false);
+    };
+    loadMembers();
+  }, []);
+
+  const handleJoin = async () => {
+    if ((business.memberIds || []).includes(currentUser.id)) {
+      Alert.alert('Ya eres miembro', 'Ya estás asociado a esta empresa.');
+      return;
+    }
+    try {
+      const bRef = doc(db, 'businesses', business.id);
+      await updateDoc(bRef, { memberIds: arrayUnion(currentUser.id) });
+      await updateDoc(doc(db, 'users', currentUser.id), { businessId: business.id, businessRole: 'member' });
+      setBusiness(b => ({ ...b, memberIds: [...(b.memberIds || []), currentUser.id] }));
+      Alert.alert('✓ Unido', `Ahora eres miembro de ${business.name}`);
+    } catch { Alert.alert('Error', 'No se pudo unir a la empresa'); }
+  };
+
+  const handleLeave = async () => {
+    Alert.alert('Salir de la empresa', '¿Deseas desvincularte?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Salir', style: 'destructive', onPress: async () => {
+        try {
+          await updateDoc(doc(db, 'businesses', business.id), { memberIds: arrayRemove(currentUser.id) });
+          await updateDoc(doc(db, 'users', currentUser.id), { businessId: null, businessRole: null });
+          onClose();
+        } catch { Alert.alert('Error', 'No se pudo salir de la empresa'); }
+      }},
+    ]);
+  };
+
+  const isMember = (business.memberIds || []).includes(currentUser.id) || business.ownerId === currentUser.id;
+
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cerrar</Text></TouchableOpacity>
+          <Text style={styles.modalTitle}>Empresa</Text>
+          <View style={{ width: 80 }} />
+        </View>
+        <ScrollView style={styles.modalContent}>
+          <View style={{ alignItems: 'center', paddingVertical: 20 }}>
+            {business.logo
+              ? <Image source={{ uri: business.logo }} style={{ width: 90, height: 90, borderRadius: 20 }} />
+              : <View style={{ width: 90, height: 90, borderRadius: 20, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}><Text style={{ fontSize: 40 }}>🏢</Text></View>}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
+              <Text style={{ fontSize: 22, fontWeight: '800', color: COLORS.text }}>{business.name}</Text>
+              <View style={styles.verifiedBadge}><Text style={styles.verifiedBadgeText}>✓</Text></View>
+            </View>
+            {business.description ? <Text style={{ color: COLORS.muted, textAlign: 'center', marginTop: 8, paddingHorizontal: 20 }}>{business.description}</Text> : null}
+            {(business.services || []).length > 0 && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12, justifyContent: 'center' }}>
+                {business.services.map(id => { const s = SERVICES.find(x => x.id === id); return s ? <Text key={id} style={styles.specialtyChip}>{s.icon} {s.label}</Text> : null; })}
+              </View>
+            )}
+          </View>
+
+          <Text style={[styles.formLabel, { marginHorizontal: 20 }]}>EQUIPO ({members.length})</Text>
+          {loading ? <ActivityIndicator color={COLORS.accent} style={{ margin: 20 }} /> : members.map(m => (
+            <View key={m.id} style={[styles.workerCard, { marginHorizontal: 16, marginBottom: 10 }]}>
+              {m.profileImage ? <Image source={{ uri: m.profileImage }} style={styles.workerAvatarImage} /> :
+                <View style={styles.workerAvatar}><Text style={styles.workerAvatarText}>{m.name?.[0]?.toUpperCase() || '?'}</Text></View>}
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.workerName}>{m.name}</Text>
+                  {m.id === business.ownerId && <Text style={[styles.specialtyChip, { backgroundColor: COLORS.accent + '22', color: COLORS.accent }]}>Admin</Text>}
+                </View>
+                {m.rating > 0 && <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}><StarRating rating={Math.round(m.rating)} size={12} /><Text style={styles.workerRating}>{m.rating.toFixed(1)}</Text></View>}
+              </View>
+            </View>
+          ))}
+
+          <View style={{ padding: 20 }}>
+            {currentUser.role === 'worker' && !isOwner && (
+              isMember
+                ? <TouchableOpacity style={[styles.primaryButton, { backgroundColor: COLORS.border }]} onPress={handleLeave}><Text style={styles.primaryButtonText}>Salir de la empresa</Text></TouchableOpacity>
+                : <TouchableOpacity style={styles.primaryButton} onPress={handleJoin}><Text style={styles.primaryButtonText}>Unirme a esta empresa →</Text></TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+function CreateBusinessScreen({ currentUser, existingBusiness, onClose, onSaved }) {
+  const [name, setName] = useState(existingBusiness?.name || '');
+  const [description, setDescription] = useState(existingBusiness?.description || '');
+  const [selectedServices, setSelectedServices] = useState(existingBusiness?.services || []);
+  const [loading, setLoading] = useState(false);
+  const toggleService = (id) => setSelectedServices(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]);
+
+  const handleSave = async () => {
+    if (!name.trim()) { Alert.alert('Error', 'El nombre de la empresa es requerido'); return; }
+    setLoading(true);
+    try {
+      if (existingBusiness) {
+        await updateDoc(doc(db, 'businesses', existingBusiness.id), { name: name.trim(), description: description.trim(), services: selectedServices });
+      } else {
+        const ref = await addDoc(collection(db, 'businesses'), {
+          name: name.trim(), description: description.trim(), services: selectedServices,
+          ownerId: currentUser.id, memberIds: [], logo: null, createdAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, 'users', currentUser.id), { businessId: ref.id, businessRole: 'owner' });
+      }
+      Alert.alert('✓ Guardado', existingBusiness ? 'Empresa actualizada' : '¡Empresa creada!');
+      onSaved();
+    } catch { Alert.alert('Error', 'No se pudo guardar la empresa'); }
+    setLoading(false);
+  };
+
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cancelar</Text></TouchableOpacity>
+          <Text style={styles.modalTitle}>{existingBusiness ? 'Editar empresa' : 'Crear empresa'}</Text>
+          <View style={{ width: 80 }} />
+        </View>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView contentContainerStyle={styles.formContainer}>
+            <Text style={styles.formLabel}>NOMBRE DE LA EMPRESA *</Text>
+            <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Ej: Plomería Garza" placeholderTextColor={COLORS.muted} />
+            <Text style={styles.formLabel}>DESCRIPCIÓN</Text>
+            <TextInput style={[styles.input, styles.textArea]} value={description} onChangeText={setDescription} placeholder="Describe los servicios que ofrece tu empresa..." placeholderTextColor={COLORS.muted} multiline />
+            <Text style={styles.formLabel}>SERVICIOS QUE OFRECE</Text>
+            <View style={styles.serviceGrid}>
+              {SERVICES.map(s => (
+                <TouchableOpacity key={s.id} onPress={() => toggleService(s.id)}
+                  style={[styles.serviceButton, selectedServices.includes(s.id) && { backgroundColor: s.color + '22', borderColor: s.color }]}>
+                  <Text style={{ fontSize: 24 }}>{s.icon}</Text>
+                  <Text style={[styles.serviceButtonText, selectedServices.includes(s.id) && { color: s.color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{s.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={[styles.primaryButton, loading && { opacity: 0.6 }]} onPress={handleSave} disabled={loading}>
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{existingBusiness ? 'Guardar cambios' : 'Crear empresa →'}</Text>}
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </Modal>
   );
@@ -3518,6 +4034,9 @@ export default function App() {
   const [exploreSection, setExploreSection] = useState('listings');
   const [bidFilter, setBidFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [feedFilter, setFeedFilter] = useState('all');
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [businessDirectory, setBusinessDirectory] = useState([]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -3555,6 +4074,23 @@ export default function App() {
 
     return unsubscribe;
   }, []);
+
+  // Check onboarding on first load
+  useEffect(() => {
+    if (user) {
+      AsyncStorage.getItem('taskly_onboarded').then(done => {
+        if (!done) setShowOnboarding(true);
+      });
+    }
+  }, [user?.id]);
+
+  // Load business directory
+  useEffect(() => {
+    if (!user) return;
+    getDocs(collection(db, 'businesses')).then(snap => {
+      setBusinessDirectory(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }).catch(() => {});
+  }, [user?.id]);
 
   // Jobs listeners
   useEffect(() => {
@@ -3715,6 +4251,10 @@ export default function App() {
     return <LoginScreen role={selectedRole} onBack={() => setSelectedRole(null)} />;
   }
 
+  if (showOnboarding) {
+    return <OnboardingScreen role={user.role} onDone={() => setShowOnboarding(false)} />;
+  }
+
   const isClient = user.role === 'client';
   const roleColor = isClient ? COLORS.blue : COLORS.accent;
   const roleIcon = isClient ? '👤' : '👷';
@@ -3726,25 +4266,26 @@ export default function App() {
         return (
           <>
             <View style={styles.exploreTabs}>
-              <TouchableOpacity 
-                style={[styles.exploreTab, exploreSection === 'listings' && styles.exploreTabActive]}
-                onPress={() => setExploreSection('listings')}
-              >
-                <Text style={[styles.exploreTabText, exploreSection === 'listings' && styles.exploreTabTextActive]}>
-                  📋 Trabajos
-                </Text>
+              <TouchableOpacity style={[styles.exploreTab, exploreSection === 'listings' && styles.exploreTabActive]} onPress={() => setExploreSection('listings')}>
+                <Text style={[styles.exploreTabText, exploreSection === 'listings' && styles.exploreTabTextActive]}>📋 Trabajos</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.exploreTab, exploreSection === 'workers' && styles.exploreTabActive]}
-                onPress={() => setExploreSection('workers')}
-              >
-                <Text style={[styles.exploreTabText, exploreSection === 'workers' && styles.exploreTabTextActive]}>
-                  👷 Trabajadores
-                </Text>
+              <TouchableOpacity style={[styles.exploreTab, exploreSection === 'workers' && styles.exploreTabActive]} onPress={() => setExploreSection('workers')}>
+                <Text style={[styles.exploreTabText, exploreSection === 'workers' && styles.exploreTabTextActive]}>👷 Trabajadores</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.exploreTab, exploreSection === 'businesses' && styles.exploreTabActive]} onPress={() => setExploreSection('businesses')}>
+                <Text style={[styles.exploreTabText, exploreSection === 'businesses' && styles.exploreTabTextActive]}>🏢 Empresas</Text>
               </TouchableOpacity>
             </View>
 
-            {exploreSection === 'listings' ? (
+            {exploreSection === 'businesses' ? (
+              <FlatList
+                data={businessDirectory}
+                keyExtractor={b => b.id}
+                contentContainerStyle={styles.jobList}
+                ListEmptyComponent={<View style={styles.emptyState}><Text style={styles.emptyStateIcon}>🏢</Text><Text style={styles.emptyStateText}>No hay empresas registradas</Text></View>}
+                renderItem={({ item }) => <BusinessCard business={item} onPress={b => setSelectedWorker({ isBusiness: true, ...b })} />}
+              />
+            ) : exploreSection === 'listings' ? (
               <FlatList
                 data={jobs}
                 keyExtractor={item => item.id}
@@ -3774,28 +4315,36 @@ export default function App() {
         );
       }
 
+      // Worker feed with filter chips
+      const filteredJobs = feedFilter === 'all' ? jobs : jobs.filter(j => j.type === feedFilter);
       return (
-        <FlatList
-          data={jobs}
-          keyExtractor={item => item.id}
-          contentContainerStyle={styles.jobList}
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateIcon}>📋</Text>
-              <Text style={styles.emptyStateText}>No hay trabajos disponibles</Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <JobCard 
-              job={item} 
-              onPress={setSelectedJob}
-              showClientRating={true}
-            />
-          )}
-          refreshControl={
-            <RefreshControl refreshing={loading} onRefresh={() => setLoading(true)} tintColor={COLORS.accent} />
-          }
-        />
+        <>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.feedFilterBar}>
+            <TouchableOpacity style={[styles.filterChip, feedFilter === 'all' && styles.filterChipActive]} onPress={() => setFeedFilter('all')}>
+              <Text style={[styles.filterChipText, feedFilter === 'all' && styles.filterChipTextActive]}>Todos</Text>
+            </TouchableOpacity>
+            {SERVICES.map(s => (
+              <TouchableOpacity key={s.id} style={[styles.filterChip, feedFilter === s.id && styles.filterChipActive]} onPress={() => setFeedFilter(s.id)}>
+                <Text style={[styles.filterChipText, feedFilter === s.id && styles.filterChipTextActive]}>{s.icon} {s.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <FlatList
+            data={filteredJobs}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.jobList}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyStateIcon}>📋</Text>
+                <Text style={styles.emptyStateText}>{feedFilter === 'all' ? 'No hay trabajos disponibles' : 'No hay trabajos de este tipo'}</Text>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <JobCard job={item} onPress={setSelectedJob} showClientRating={true} />
+            )}
+            refreshControl={<RefreshControl refreshing={loading} onRefresh={() => setLoading(true)} tintColor={COLORS.accent} />}
+          />
+        </>
       );
     }
 
@@ -4060,12 +4609,9 @@ export default function App() {
         />
       )}
 
-      {selectedWorker && (
-        <WorkerProfileModal
-          worker={selectedWorker}
-          currentUser={user}
-          onClose={() => setSelectedWorker(null)}
-        />
+      {selectedWorker && (selectedWorker.isBusiness
+        ? <BusinessProfileModal business={selectedWorker} currentUser={user} onClose={() => setSelectedWorker(null)} />
+        : <WorkerProfileModal worker={selectedWorker} currentUser={user} onClose={() => setSelectedWorker(null)} />
       )}
 
       {showNotifications && (
@@ -5251,6 +5797,40 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 4,
   },
+
+  // ✅ Onboarding
+  onboardingContainer: { flex: 1, backgroundColor: COLORS.bg },
+  onboardingIcon: { fontSize: 80, textAlign: 'center', marginBottom: 24 },
+  onboardingTitle: { fontSize: 28, fontWeight: '900', color: COLORS.text, textAlign: 'center', marginBottom: 16 },
+  onboardingDesc: { fontSize: 16, color: COLORS.muted, textAlign: 'center', lineHeight: 24 },
+  onboardingDots: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 24 },
+  onboardingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.border },
+  onboardingDotActive: { backgroundColor: COLORS.accent, width: 24 },
+  onboardingActions: { paddingHorizontal: 24, paddingBottom: 40 },
+  onboardingSkipBtn: { paddingVertical: 18, paddingHorizontal: 24, alignItems: 'center' },
+  onboardingSkipText: { color: COLORS.muted, fontSize: 15, fontWeight: '600' },
+
+  // ✅ Image gallery
+  galleryCloseBtn: { position: 'absolute', top: 50, right: 20, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+  galleryCloseTxt: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  galleryCounter: { position: 'absolute', top: 55, left: 0, right: 0, textAlign: 'center', color: '#fff', fontSize: 13, fontWeight: '600', zIndex: 5 },
+  galleryDots: { flexDirection: 'row', justifyContent: 'center', gap: 6, paddingVertical: 16 },
+  galleryDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)' },
+  galleryDotActive: { backgroundColor: '#fff', width: 16 },
+
+  // ✅ Worker specialties & business
+  specialtyChip: { fontSize: 11, fontWeight: '700', color: COLORS.muted, backgroundColor: COLORS.border, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  workerBusiness: { fontSize: 11, color: COLORS.accent, fontWeight: '600', marginTop: 4 },
+
+  // ✅ Business cards
+  businessCard: { flexDirection: 'row', gap: 12, backgroundColor: COLORS.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border, marginBottom: 12 },
+  businessLogo: { width: 60, height: 60, borderRadius: 14 },
+  businessName: { fontSize: 16, fontWeight: '800', color: COLORS.text },
+  businessMeta: { fontSize: 12, color: COLORS.muted, marginTop: 2 },
+  businessDesc: { fontSize: 12, color: COLORS.muted, marginTop: 6, lineHeight: 16 },
+
+  // ✅ Feed filter bar
+  feedFilterBar: { paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
 
   // ✅ Verified badge on worker cards
   verifiedBadge: {
