@@ -2480,6 +2480,16 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
               </View>
             )}
 
+            {/* Stripe fee notice for card jobs */}
+            {paymentMethod === 'card' && (
+              <View style={{ backgroundColor: COLORS.accent + '12', borderRadius: 10, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: COLORS.accent + '30' }}>
+                <Text style={{ color: COLORS.accent, fontSize: 12, fontWeight: '700', marginBottom: 2 }}>💳 Nota sobre pagos con tarjeta</Text>
+                <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 17 }}>
+                  Al cobrar con tarjeta se aplica un cargo de procesamiento (~{((STRIPE_RATE + TASKLY_RATE) * 100).toFixed(1)}%) sobre el precio acordado. El trabajador recibe el precio acordado menos la comisión Taskly (2.5%). El cliente ve el desglose exacto antes de pagar.
+                </Text>
+              </View>
+            )}
+
             {/* Urgent Toggle */}
             {!isEditing && (
               <View style={styles.urgentContainer}>
@@ -3417,15 +3427,19 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                 <Text style={[styles.jobDetailTitle, { color: C.text }]}>{job.title}</Text>
                 <TouchableOpacity 
                   onPress={() => {
-                    if (job.locationShared && job.exactLocation) {
+                    const canSeeExact = isMyJob || job.assignedTo === user.id;
+                    if (canSeeExact && job.locationShared && job.exactLocation) {
                       setShowMap(true);
                     }
                   }}
                 >
                   <Text style={styles.jobDetailLocation}>
-                    📍 {job.locationShared && job.exactLocation 
-                      ? job.exactLocation.address 
-                      : job.estimatedLocation?.area || job.location}
+                    {(() => {
+                      const canSeeExact = isMyJob || job.assignedTo === user.id;
+                      return '📍 ' + (canSeeExact && job.locationShared && job.exactLocation
+                        ? job.exactLocation.address
+                        : job.estimatedLocation?.area || job.location);
+                    })()}
                   </Text>
                 </TouchableOpacity>
                 {job.userName && (
@@ -3475,7 +3489,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   </TouchableOpacity>
                 )}
 
-                {job.locationShared && job.exactLocation && (
+                {(isMyJob || job.assignedTo === user.id) && job.locationShared && job.exactLocation && (
                   <View style={styles.inlineMapBox}>
                     <Text style={styles.inlineMapAddress}>📍 {job.exactLocation.address}</Text>
                     <MapView
@@ -3741,8 +3755,11 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                     <Text style={[styles.completeButtonText, { color: COLORS.green }]}>✓ Confirmado — esperando al trabajador</Text>
                   </View>
                 ) : (
-                  <TouchableOpacity style={styles.completeButton} onPress={handleMarkComplete}>
-                    <Text style={styles.completeButtonText}>✓ Confirmar trabajo completado</Text>
+                  <TouchableOpacity style={[styles.completeButton, job.workerConfirmed && { backgroundColor: COLORS.green, borderColor: COLORS.green }]} onPress={handleMarkComplete}>
+                    {job.workerConfirmed && <Text style={{ color: '#fff', fontSize: 11, textAlign: 'center', marginBottom: 2, opacity: 0.85 }}>El trabajador ya confirmó su parte</Text>}
+                    <Text style={[styles.completeButtonText, job.workerConfirmed && { color: '#fff' }]}>
+                      {job.workerConfirmed ? '✓ Confirmar y proceder al pago' : '✓ Confirmar trabajo completado'}
+                    </Text>
                   </TouchableOpacity>
                 )}
               </>
@@ -3834,10 +3851,13 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   </View>
                 ) : (
                   <TouchableOpacity
-                    style={[styles.completeButton, { backgroundColor: COLORS.green + '22', borderColor: COLORS.green }]}
+                    style={[styles.completeButton, { backgroundColor: job.clientConfirmed ? COLORS.green : COLORS.green + '22', borderColor: COLORS.green }]}
                     onPress={handleWorkerMarkComplete}
                   >
-                    <Text style={[styles.completeButtonText, { color: COLORS.green }]}>✓ Finalizar trabajo</Text>
+                    {job.clientConfirmed && <Text style={{ color: '#fff', fontSize: 11, textAlign: 'center', marginBottom: 2, opacity: 0.85 }}>El cliente ya confirmó su parte</Text>}
+                    <Text style={[styles.completeButtonText, { color: job.clientConfirmed ? '#fff' : COLORS.green }]}>
+                      {job.clientConfirmed ? '✓ Confirmar — eres el último paso' : '✓ Finalizar trabajo'}
+                    </Text>
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity
@@ -4840,6 +4860,14 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
         const completed = paymentHistory.completed.filter(dateFilterFn);
         const totalCompleted = completed.reduce((s, i) => {
           const t = (i.assignedPrice || 0) + (i.isUrgent ? URGENT_JOB_PRICE : 0);
+          return s + (isWorkerView ? Math.round(t * 0.975 * 100) / 100 : calcStripeFees(t).clientTotal);
+        }, 0);
+        const totalPending = inProcess.reduce((s, i) => {
+          const t = (i.assignedPrice || 0) + (i.isUrgent ? URGENT_JOB_PRICE : 0);
+          return s + (isWorkerView ? Math.round(t * 0.975 * 100) / 100 : calcStripeFees(t).clientTotal);
+        }, 0);
+        const totalUpcoming = upcoming.reduce((s, i) => {
+          const t = (i.assignedPrice || 0) + (i.isUrgent ? URGENT_JOB_PRICE : 0);
           return s + (isWorkerView ? Math.round(t * 0.975 * 100) / 100 : t);
         }, 0);
         const allEmpty = upcoming.length === 0 && inProcess.length === 0 && completed.length === 0;
@@ -4848,7 +4876,8 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
           const total = (item.assignedPrice || 0) + (item.isUrgent ? URGENT_JOB_PRICE : 0);
           const commission = Math.round(total * 0.025 * 100) / 100;
           const workerReceives = Math.round((total - commission) * 100) / 100;
-          const amount = isWorkerView ? workerReceives : total;
+          const stripeTotal = calcStripeFees(total).clientTotal;
+          const amount = isWorkerView ? workerReceives : (item.paymentMethod === 'card' && item.status !== 'assigned' ? stripeTotal : total);
           const dateRef = item.completedAt || item.paymentInitiatedAt || item.createdAt;
           const dateLabel = dateRef?.toDate?.().toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) || '—';
           return (
@@ -4949,16 +4978,27 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                 </View>
               ) : (
                 <ScrollView contentContainerStyle={{ padding: 16 }} refreshControl={<RefreshControl refreshing={phLoading} onRefresh={loadPaymentHistory} tintColor={COLORS.accent} />}>
-                  {/* Summary banner */}
-                  {completed.length > 0 && (
-                    <View style={{ backgroundColor: COLORS.green + '18', borderRadius: 12, padding: 14, marginBottom: 18, borderWidth: 1, borderColor: COLORS.green + '44', flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                      <Ionicons name="trending-up-outline" size={28} color={COLORS.green} />
-                      <View>
-                        <Text style={{ color: C.muted, fontSize: 12 }}>{isWorkerView ? 'Total recibido' : 'Total pagado'} ({phDateFilter === 'all' ? 'histórico' : phDateFilter === 'month' ? 'este mes' : phDateFilter === '3months' ? 'últimos 3 meses' : 'este año'})</Text>
-                        <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 22 }}>${fmtMXN(totalCompleted)} MXN</Text>
-                      </View>
+                  {/* 3 global summary cards */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
+                    <View style={{ flex: 1, backgroundColor: COLORS.green + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.green + '44', alignItems: 'center' }}>
+                      <Ionicons name="checkmark-circle-outline" size={20} color={COLORS.green} />
+                      <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>{isWorkerView ? 'Confirmado' : 'Pagado'}</Text>
+                      <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalCompleted)}</Text>
+                      <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
                     </View>
-                  )}
+                    <View style={{ flex: 1, backgroundColor: COLORS.yellow + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.yellow + '44', alignItems: 'center' }}>
+                      <Ionicons name="time-outline" size={20} color={COLORS.yellow} />
+                      <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>En camino</Text>
+                      <Text style={{ color: COLORS.yellow, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalPending)}</Text>
+                      <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
+                    </View>
+                    <View style={{ flex: 1, backgroundColor: COLORS.blue + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.blue + '44', alignItems: 'center' }}>
+                      <Ionicons name="hammer-outline" size={20} color={COLORS.blue} />
+                      <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>{isWorkerView ? 'Por cobrar' : 'Por pagar'}</Text>
+                      <Text style={{ color: COLORS.blue, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalUpcoming)}</Text>
+                      <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
+                    </View>
+                  </View>
 
                   {/* Upcoming / assigned */}
                   {upcoming.length > 0 && (
@@ -7564,6 +7604,7 @@ export default function App() {
 
       // Worker feed with search + filter chips
       const filteredJobs = (feedFilter === 'all' ? jobs : jobs.filter(j => j.type === feedFilter))
+        .filter(j => j.status === 'open') // hide completed/cancelled/assigned from worker explore
         .filter(j => !jobSearch || [j.title, j.description, j.location].filter(Boolean).some(f => f.toLowerCase().includes(jobSearch.toLowerCase())));
       const bankingSetup = !!user?.stripeAccountId;
       return (
