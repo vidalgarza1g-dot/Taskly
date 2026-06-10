@@ -1653,7 +1653,7 @@ const buildReceiptHTML = ({ jobTitle, piId, date, clientName, workerName, assign
       ${isUrgent ? `<tr><td>Cargo urgente</td><td>+$${Number(urgentFee).toFixed(2)} MXN</td></tr>` : ''}
       ${forWorker
         ? `<tr class="deduction"><td>Comisión Taskly (2.5%)</td><td>-$${Number(commission).toFixed(2)} MXN</td></tr>`
-        : `<tr><td>Comisión de procesamiento</td><td>Incluida</td></tr>`}
+        : `<tr><td>Procesamiento Stripe (3.6% + $3 MXN)</td><td>Incluida</td></tr>`}
       <tr class="total-row">
         <td>${forWorker ? 'Total que recibes' : 'Total cobrado'}</td>
         <td>$${Number(forWorker ? workerReceives : clientTotal).toFixed(2)} MXN</td>
@@ -1834,12 +1834,16 @@ function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName })
 
 // 💳 Payment Modal — native Apple/Google Pay + Card (Stripe only)
 // Fee rates used to gross-up client payment so worker always receives the quoted price
-const TASKLY_RATE = 0.025; // Taskly's 2.5% commission
-const STRIPE_RATE = 0.036; // Stripe Mexico processing fee
+const TASKLY_RATE        = 0.025; // Taskly's 2.5% commission
+const STRIPE_RATE        = 0.036; // Stripe Mexico: 3.6% of charge
+const STRIPE_FIXED_FEE   = 3;     // Stripe Mexico: +$3 MXN flat per transaction
 
 function calcStripeFees(jobAmount) {
-  // clientPays = jobAmount / (1 - stripe - taskly) so worker gets jobAmount after both cuts
-  const clientTotal   = Math.ceil(jobAmount / (1 - STRIPE_RATE - TASKLY_RATE));
+  // Worker receives jobAmount. Client pays enough to cover:
+  //   • Stripe fee: 3.6% of clientTotal + $3 MXN fixed
+  //   • Taskly fee: 2.5% of clientTotal
+  // Solving: jobAmount = clientTotal * (1 - STRIPE_RATE - TASKLY_RATE) - STRIPE_FIXED_FEE
+  const clientTotal   = Math.ceil((jobAmount + STRIPE_FIXED_FEE) / (1 - STRIPE_RATE - TASKLY_RATE));
   const tasklyFee     = Math.round(clientTotal * TASKLY_RATE);
   const processingFee = clientTotal - jobAmount - tasklyFee;
   return { clientTotal, tasklyFee, processingFee };
@@ -1942,7 +1946,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, padding: 14, marginTop: 10, marginBottom: 16, borderWidth: 1, borderColor: COLORS.border }}>
             <Row label="Servicio (el trabajador recibe)" value={`$${jobAmount} MXN`} />
             <Row label={`Comisión Taskly (${(TASKLY_RATE * 100).toFixed(1)}%)`} value={`+ $${stripe.tasklyFee} MXN`} />
-            <Row label="Procesamiento Stripe" value={`+ $${stripe.processingFee} MXN`} />
+            <Row label={`Procesamiento Stripe (${(STRIPE_RATE*100).toFixed(1)}% + $${STRIPE_FIXED_FEE} MXN)`} value={`+ $${stripe.processingFee} MXN`} />
             <View style={{ height: 1, backgroundColor: COLORS.border, marginVertical: 8 }} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <Text style={{ color: COLORS.text, fontSize: 14, fontWeight: '700' }}>Total a pagar</Text>
@@ -2485,7 +2489,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
               <View style={{ backgroundColor: COLORS.accent + '12', borderRadius: 10, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: COLORS.accent + '30' }}>
                 <Text style={{ color: COLORS.accent, fontSize: 12, fontWeight: '700', marginBottom: 2 }}>💳 Nota sobre pagos con tarjeta</Text>
                 <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 17 }}>
-                  El cliente paga el precio acordado más un cargo de procesamiento Stripe (~{(STRIPE_RATE * 100).toFixed(1)}%). Taskly cobra una comisión del {(TASKLY_RATE * 100).toFixed(1)}% al trabajador. Ambos ven el desglose exacto antes de confirmar.
+                  Stripe cobra {(STRIPE_RATE * 100).toFixed(1)}% + ${STRIPE_FIXED_FEE} MXN fijos por transacción al cliente. Taskly cobra {(TASKLY_RATE * 100).toFixed(1)}% al trabajador. Ambos ven el desglose exacto antes de confirmar.
                 </Text>
               </View>
             )}
