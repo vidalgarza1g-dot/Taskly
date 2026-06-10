@@ -2485,7 +2485,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
               <View style={{ backgroundColor: COLORS.accent + '12', borderRadius: 10, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: COLORS.accent + '30' }}>
                 <Text style={{ color: COLORS.accent, fontSize: 12, fontWeight: '700', marginBottom: 2 }}>💳 Nota sobre pagos con tarjeta</Text>
                 <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 17 }}>
-                  Al cobrar con tarjeta se aplica un cargo de procesamiento (~{((STRIPE_RATE + TASKLY_RATE) * 100).toFixed(1)}%) sobre el precio acordado. El trabajador recibe el precio acordado menos la comisión Taskly (2.5%). El cliente ve el desglose exacto antes de pagar.
+                  El cliente paga el precio acordado más un cargo de procesamiento Stripe (~{(STRIPE_RATE * 100).toFixed(1)}%). Taskly cobra una comisión del {(TASKLY_RATE * 100).toFixed(1)}% al trabajador. Ambos ven el desglose exacto antes de confirmar.
                 </Text>
               </View>
             )}
@@ -4989,7 +4989,11 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                     <View style={{ flex: 1, backgroundColor: COLORS.yellow + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.yellow + '44', alignItems: 'center' }}>
                       <Ionicons name="time-outline" size={20} color={COLORS.yellow} />
                       <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>En camino</Text>
-                      <Text style={{ color: COLORS.yellow, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalPending)}</Text>
+                      <Text style={{ color: COLORS.yellow, fontWeight: '800', fontSize: 15, marginTop: 2 }}>
+                        ${fmtMXN(isWorkerView && phPayoutStatus?.pending != null
+                          ? phPayoutStatus.pending
+                          : totalPending)}
+                      </Text>
                       <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
                     </View>
                     <View style={{ flex: 1, backgroundColor: COLORS.blue + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.blue + '44', alignItems: 'center' }}>
