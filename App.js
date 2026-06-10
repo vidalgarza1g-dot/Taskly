@@ -3017,6 +3017,24 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
     }
   };
 
+  const handleOpenPayment = async () => {
+    try {
+      const workerSnap = await getDoc(doc(db, 'users', job.assignedTo));
+      const hasStripe = workerSnap.exists() && !!workerSnap.data().stripeAccountId;
+      if (!hasStripe) {
+        Alert.alert(
+          'El trabajador no puede recibir pagos',
+          `${job.assignedWorkerName || 'El trabajador'} aún no ha configurado su cuenta bancaria en Taskly.\n\nPídele que abra la app, vaya a Configuración → Cuenta bancaria y complete el proceso antes de continuar.`,
+          [{ text: 'Entendido', style: 'default' }]
+        );
+        return;
+      }
+    } catch {
+      // If we can't check, allow payment to proceed — PaymentModal will handle the missing ID gracefully
+    }
+    setShowPayment(true);
+  };
+
   const handleMarkComplete = async () => {
     Alert.alert(
       'Confirmar trabajo completado',
@@ -3034,7 +3052,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                 if (job.paymentMethod === 'cash') {
                   await finalizeCompletion();
                 } else {
-                  setShowPayment(true);
+                  await handleOpenPayment();
                 }
               } else {
                 Alert.alert('✓ Confirmado', 'Esperando que el trabajador confirme su parte.');
@@ -3674,7 +3692,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                 {job.paymentRequested ? (
                   <TouchableOpacity
                     style={[styles.completeButton, { backgroundColor: COLORS.green, borderColor: COLORS.green }]}
-                    onPress={() => setShowPayment(true)}
+                    onPress={handleOpenPayment}
                   >
                     <Text style={[styles.completeButtonText, { color: '#fff' }]}>💳 Pagar ahora — ${paymentTotal} MXN</Text>
                   </TouchableOpacity>
