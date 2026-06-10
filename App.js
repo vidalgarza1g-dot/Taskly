@@ -2797,17 +2797,29 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
       });
       setShowPayment(false);
 
-      // Fetch worker profile for name + email (fire-and-forget if it fails)
+      // Fetch worker profile for name + email + stripe status
       let workerName = '';
       let workerEmail = '';
+      let workerHasStripe = false;
       if (job.assignedTo) {
         try {
           const workerSnap = await getDoc(doc(db, 'users', job.assignedTo));
           if (workerSnap.exists()) {
-            workerName  = workerSnap.data().name  || '';
-            workerEmail = workerSnap.data().email || '';
+            workerName      = workerSnap.data().name  || '';
+            workerEmail     = workerSnap.data().email || '';
+            workerHasStripe = !!workerSnap.data().stripeAccountId;
           }
         } catch {}
+      }
+
+      // If worker has no Stripe account, flag the job for deferred transfer
+      if (stripePaymentIntentId && !workerHasStripe) {
+        const total     = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0);
+        const comm      = Math.round(total * 0.025 * 100) / 100;
+        await updateDoc(doc(db, 'jobs', job.id), {
+          pendingTransfer: true,
+          workerPortion: Math.round((total - comm) * 100) / 100,
+        });
       }
 
       // Send email receipts to both parties (non-blocking)
@@ -2937,6 +2949,29 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   };
 
   const handleAcceptBid = async (bid) => {
+    // For card jobs, block acceptance if the worker has no CLABE linked
+    if (job.paymentMethod === 'card') {
+      try {
+        const workerSnap = await getDoc(doc(db, 'users', bid.userId));
+        const hasStripe = workerSnap.exists() && !!workerSnap.data().stripeAccountId;
+        if (!hasStripe) {
+          Alert.alert(
+            'Trabajador sin cuenta bancaria',
+            `${bid.userName} aún no ha vinculado su CLABE en Taskly, por lo que no puede recibir pagos con tarjeta.\n\nPuedes:\n• Pedirle que configure su cuenta en Configuración → Cuenta bancaria\n• Acordar con él cambiar este trabajo a pago en efectivo`,
+            [{ text: 'Entendido' }]
+          );
+          return;
+        }
+      } catch {
+        Alert.alert(
+          'Sin conexión',
+          'No se pudo verificar la cuenta bancaria del trabajador. Revisa tu conexión e intenta de nuevo.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+    }
+
     const otherBidders = (job.bids || []).filter(b => b.userId !== bid.userId);
     const chatNote = otherBidders.length > 0
       ? '\n\nLos chats con los demás proponentes serán eliminados.'
@@ -3640,7 +3675,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
               </TouchableOpacity>
             )}
 
-            {canBid && (
+            {canBid && (job.paymentMethod === 'cash' || user.stripeAccountId) && (
               <View style={[styles.bidFormSection, { backgroundColor: C.card, borderColor: C.border }]}>
                 <Text style={[styles.sectionTitle, { color: C.text }]}>Hacer una propuesta</Text>
 
@@ -5919,6 +5954,36 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
       if (err2) throw new Error(err2);
 
       await WebBrowser.openAuthSessionAsync(url, 'taskly://banking-complete');
+
+      // Release any payments that landed while this worker had no Stripe account
+      try {
+        const pendingQ = query(
+          collection(db, 'jobs'),
+          where('assignedTo', '==', userId),
+          where('pendingTransfer', '==', true)
+        );
+        const pendingSnap = await getDocs(pendingQ);
+        for (const jobDoc of pendingSnap.docs) {
+          const jd = jobDoc.data();
+          if (!jd.stripePaymentIntentId || !jd.workerPortion) continue;
+          try {
+            const r = await fetch(`${BACKEND_URL}/release-transfer`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                stripeAccountId: accountId,
+                stripePaymentIntentId: jd.stripePaymentIntentId,
+                workerPortionCentavos: Math.round(jd.workerPortion * 100),
+              }),
+            });
+            const { transferId } = await r.json();
+            if (transferId) {
+              await updateDoc(doc(db, 'jobs', jobDoc.id), { pendingTransfer: false, transferId });
+            }
+          } catch {}
+        }
+      } catch {}
+
       onDone();
     } catch (e) {
       Alert.alert('Error', e.message || 'No se pudo iniciar la configuración. Intenta de nuevo.');
