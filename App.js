@@ -1845,7 +1845,7 @@ function calcStripeFees(jobAmount) {
   return { clientTotal, tasklyFee, processingFee };
 }
 
-function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, workerId, clientEmail }) {
+function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, workerId, clientEmail, jobId }) {
   const { initPaymentSheet, presentPaymentSheet } = usePaymentSheet();
   const { confirmPlatformPayPayment } = usePlatformPay();
   const showPlatformPay = Platform.OS === 'ios' || Platform.OS === 'android';
@@ -1866,7 +1866,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
     const res = await fetch(`${BACKEND_URL}/create-payment-sheet`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: grossAmount, currency: 'mxn', description, workerStripeAccountId, clientEmail }),
+      body: JSON.stringify({ amount: grossAmount, currency: 'mxn', description, workerStripeAccountId, clientEmail, jobId }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -2730,6 +2730,8 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   const [showPayment, setShowPayment] = useState(false);
   const [showDisputeForm, setShowDisputeForm] = useState(false);
   const [showBankingOnboarding, setShowBankingOnboarding] = useState(false);
+  const [editingBidPrice, setEditingBidPrice] = useState(false);
+  const [newBidPrice, setNewBidPrice] = useState('');
   const [disputeReason, setDisputeReason] = useState('');
   const [disputeDesc, setDisputeDesc] = useState('');
   const [disputeLoading, setDisputeLoading] = useState(false);
@@ -2908,11 +2910,6 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
       Alert.alert('Error', 'Ingresa tu propuesta de precio');
       return;
     }
-    if (job.paymentMethod === 'card' && !user.stripeAccountId) {
-      setShowBankingOnboarding(true);
-      return;
-    }
-
     setLoading(true);
     try {
       const jobRef = doc(db, 'jobs', job.id);
@@ -2924,6 +2921,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
         message: bidMessage || `Puedo hacer este trabajo por $${bidPrice}`,
         createdAt: new Date(),
         status: 'pending',
+        hasStripeAccount: !!user.stripeAccountId,
       };
 
       await updateDoc(jobRef, {
@@ -2977,8 +2975,8 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
       ? '\n\nLos chats con los demás proponentes serán eliminados.'
       : '';
     Alert.alert(
-      'Aceptar propuesta',
-      `¿Aceptar la propuesta de ${bid.userName} por $${bid.price}?${chatNote}`,
+      'Confirmar selección de trabajador',
+      `¿Deseas contratar a ${bid.userName} para "${job.title}" por $${bid.price} MXN?\n\nUna vez aceptado, el precio queda acordado.${chatNote}`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -3648,12 +3646,19 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                           >
                             <Text style={styles.chatButtonText}>💬 Chatear</Text>
                           </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[styles.acceptButton, { flex: 1, marginTop: 0 }]}
-                            onPress={() => handleAcceptBid(bid)}
-                          >
-                            <Text style={styles.acceptButtonText}>✓ Aceptar</Text>
-                          </TouchableOpacity>
+                          {job.paymentMethod === 'card' && !bid.hasStripeAccount ? (
+                            <View style={{ flex: 1, backgroundColor: C.border, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }}>
+                              <Ionicons name="card-outline" size={13} color={C.muted} />
+                              <Text style={{ color: C.muted, fontSize: 10, fontWeight: '600', textAlign: 'center', marginTop: 2 }}>Sin cuenta{'\n'}bancaria</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity
+                              style={[styles.acceptButton, { flex: 1, marginTop: 0 }]}
+                              onPress={() => handleAcceptBid(bid)}
+                            >
+                              <Text style={styles.acceptButtonText}>✓ Aceptar</Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
                       )}
                     </View>
@@ -3675,7 +3680,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
               </TouchableOpacity>
             )}
 
-            {canBid && (job.paymentMethod === 'cash' || user.stripeAccountId) && (
+            {canBid && (
               <View style={[styles.bidFormSection, { backgroundColor: C.card, borderColor: C.border }]}>
                 <Text style={[styles.sectionTitle, { color: C.text }]}>Hacer una propuesta</Text>
 
@@ -3753,10 +3758,71 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
             )}
 
             {alreadyBid && !canManage && (
-              <View style={styles.alreadyBidBox}>
-                <Text style={styles.alreadyBidText}>
-                  ✓ Ya hiciste una propuesta de ${myBid?.price}
-                </Text>
+              <View style={[styles.alreadyBidBox, { padding: 14 }]}>
+                {editingBidPrice ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={[styles.alreadyBidText, { marginBottom: 4 }]}>Actualizar precio de propuesta</Text>
+                    <TextInput
+                      style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border, marginBottom: 0 }]}
+                      value={newBidPrice}
+                      onChangeText={setNewBidPrice}
+                      placeholder={`Precio actual: $${myBid?.price}`}
+                      placeholderTextColor={C.muted}
+                      keyboardType="numeric"
+                      autoFocus
+                    />
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={{ flex: 1, backgroundColor: C.border, borderRadius: 8, padding: 10, alignItems: 'center' }}
+                        onPress={() => { setEditingBidPrice(false); setNewBidPrice(''); }}
+                      >
+                        <Text style={{ color: C.muted, fontWeight: '600', fontSize: 13 }}>Cancelar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ flex: 2, backgroundColor: COLORS.accent, borderRadius: 8, padding: 10, alignItems: 'center' }}
+                        onPress={async () => {
+                          const parsed = parseInt(newBidPrice);
+                          if (!parsed || parsed <= 0) { Alert.alert('Error', 'Ingresa un precio válido'); return; }
+                          try {
+                            const jobRef = doc(db, 'jobs', job.id);
+                            const snap = await getDoc(jobRef);
+                            const updatedBids = (snap.data().bids || []).map(b =>
+                              b.userId === user.id ? { ...b, price: parsed } : b
+                            );
+                            await updateDoc(jobRef, { bids: updatedBids });
+                            // Send price-update system message to chat with job owner
+                            const chatIdForMsg = await getOrCreateChat(user.id, job.userId, job.id);
+                            await addDoc(collection(db, 'messages'), {
+                              chatId: chatIdForMsg,
+                              senderId: 'system',
+                              senderName: 'Sistema',
+                              text: `💰 ${user.name} actualizó su propuesta a $${parsed} MXN`,
+                              type: 'price_update',
+                              createdAt: serverTimestamp(),
+                            });
+                            setEditingBidPrice(false);
+                            setNewBidPrice('');
+                          } catch { Alert.alert('Error', 'No se pudo actualizar el precio'); }
+                        }}
+                      >
+                        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Confirmar nuevo precio</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={styles.alreadyBidText}>✓ Tu propuesta: ${myBid?.price} MXN</Text>
+                    {job.status === 'open' && (
+                      <TouchableOpacity
+                        onPress={() => { setEditingBidPrice(true); setNewBidPrice(String(myBid?.price || '')); }}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.accent + '22', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}
+                      >
+                        <Ionicons name="pencil-outline" size={13} color={COLORS.accent} />
+                        <Text style={{ color: COLORS.accent, fontSize: 12, fontWeight: '700' }}>Editar</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
               </View>
             )}
 
@@ -3911,6 +3977,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
             description={`${job.title}${job.isUrgent ? ' + Urgente' : ''}`}
             workerId={job.assignedTo}
             clientEmail={user.email || null}
+            jobId={job.id}
             onSuccess={finalizeCompletion}
             onClose={() => setShowPayment(false)}
           />
@@ -5996,9 +6063,6 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
     <Modal visible animationType="slide" statusBarTranslucent>
       <SafeAreaView style={styles.onboardingContainer}>
         <StatusBar barStyle="light-content" />
-        <TouchableOpacity onPress={onDone} style={{ alignSelf: 'flex-end', padding: 20, paddingBottom: 0 }}>
-          <Text style={{ color: COLORS.muted, fontSize: 15 }}>Más tarde</Text>
-        </TouchableOpacity>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
           <Text style={styles.onboardingIcon}>{slides[page].icon}</Text>
           <Text style={styles.onboardingTitle}>{slides[page].title}</Text>
@@ -6017,6 +6081,9 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
               {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Conectar cuenta bancaria →</Text>}
             </TouchableOpacity>
           )}
+          <TouchableOpacity onPress={onDone} style={{ marginTop: 14, padding: 10, alignItems: 'center' }}>
+            <Text style={{ color: COLORS.muted, fontSize: 14 }}>Completar después</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     </Modal>
