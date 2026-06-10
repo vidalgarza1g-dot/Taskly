@@ -7093,7 +7093,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        const TEST_EMAILS = ['cliente@cliente.com', 'trabajador@trabajador.com', 'trabajador2@trabajador.com'];
+        const TEST_EMAILS = ['cliente@cliente.com', 'trabajador@trabajador.com', 'trabajador2@trabajador.com', 'trabajador3@trabajador.com'];
         const isPasswordProvider = firebaseUser.providerData?.some(p => p.providerId === 'password');
         if (isPasswordProvider && !firebaseUser.emailVerified && !TEST_EMAILS.includes(firebaseUser.email)) {
           setNeedsEmailVerification(true);
