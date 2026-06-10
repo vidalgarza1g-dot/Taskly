@@ -1576,42 +1576,58 @@ const buildReceiptHTML = ({ jobTitle, piId, date, clientName, workerName, assign
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
+  @page { size: A4 portrait; margin: 0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, Helvetica, sans-serif; background: #f0f0f0; padding: 32px 16px; }
-  .card { max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.12); }
-  .header { background: #1A1A2E; padding: 32px 36px; text-align: center; }
-  .header img { display: block; margin: 0 auto 16px; width: 130px; height: auto; }
-  .status-badge { display: inline-block; background: rgba(255,107,53,0.15); border: 1px solid #FF6B35; border-radius: 24px; padding: 6px 20px; margin-top: 4px; }
-  .status-badge span { color: #FF6B35; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; }
-  .content { padding: 32px 36px; }
-  .greeting { font-size: 22px; font-weight: 700; color: #1A1A2E; margin-bottom: 6px; }
-  .subtitle { font-size: 15px; color: #666; line-height: 1.6; margin-bottom: 24px; }
+  body { font-family: Arial, Helvetica, sans-serif; background: #ffffff; width: 100%; }
+  .card { width: 100%; background: #ffffff; }
+
+  /* Header */
+  .header { background: #1A1A2E; padding: 22px 36px; text-align: center; }
+  .header img { display: block; margin: 0 auto 10px; width: 110px; height: auto; }
+  .status-badge { display: inline-block; background: rgba(255,107,53,0.15); border: 1px solid #FF6B35; border-radius: 20px; padding: 4px 16px; }
+  .status-badge span { color: #FF6B35; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+
+  /* Content */
+  .content { padding: 20px 36px 16px; }
+  .greeting { font-size: 18px; font-weight: 700; color: #1A1A2E; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #444; line-height: 1.5; margin-bottom: 16px; }
   .subtitle strong { color: #1A1A2E; }
-  hr { border: none; border-top: 1px solid #eeeeee; margin: 0 0 24px; }
-  .section-label { font-size: 11px; font-weight: 700; color: #999; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 14px; }
-  .detail-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-  .detail-table td { padding: 11px 0; font-size: 14px; border-bottom: 1px solid #f5f5f5; }
-  .detail-table td:first-child { color: #888; }
+  hr { border: none; border-top: 1px solid #e0e0e0; margin: 0 0 16px; }
+
+  /* Section labels */
+  .section-label { font-size: 10px; font-weight: 700; color: #555; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; }
+
+  /* Detail tables */
+  .detail-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  .detail-table td { padding: 7px 0; font-size: 13px; border-bottom: 1px solid #eeeeee; color: #222; }
+  .detail-table td:first-child { color: #444; font-weight: 400; }
   .detail-table td:last-child { text-align: right; color: #1A1A2E; font-weight: 600; }
-  .detail-table .deduction td:last-child { color: #e53935; }
-  .total-box { background: #fff8f5; border-radius: 10px; padding: 16px 18px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-  .total-label { font-size: 15px; font-weight: 700; color: #FF6B35; }
-  .total-amount { font-size: 22px; font-weight: 700; color: #FF6B35; }
-  .ref-box { background: #f7f7f7; border-radius: 10px; padding: 14px 18px; margin-bottom: 20px; }
-  .ref-box .ref-label { font-size: 11px; font-weight: 700; color: #999; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
-  .ref-box .ref-value { font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #444; word-break: break-all; }
-  .note-box { background: #fff8f5; border-left: 3px solid #FF6B35; border-radius: 0 8px 8px 0; padding: 14px 18px; margin-bottom: 8px; font-size: 13px; color: #666; line-height: 1.6; }
-  .footer { background: #1A1A2E; padding: 26px 36px; text-align: center; }
-  .footer p { font-size: 13px; color: rgba(255,255,255,0.5); margin-bottom: 6px; }
-  .footer a { color: #FF6B35; font-size: 14px; font-weight: 600; text-decoration: none; }
-  .footer .copy { margin-top: 14px; font-size: 12px; color: rgba(255,255,255,0.3); }
-  .footer .copy a { color: rgba(255,255,255,0.4); font-size: 12px; font-weight: 400; }
+  .detail-table .deduction td:last-child { color: #c62828; }
+
+  /* Total row */
+  .total-row { background: #fff4ef; border-radius: 8px; overflow: hidden; margin-bottom: 14px; }
+  .total-row td { padding: 12px 14px; font-size: 14px; font-weight: 700; color: #FF6B35; border-bottom: none; }
+  .total-row td:first-child { color: #FF6B35; }
+  .total-row td:last-child { font-size: 18px; }
+
+  /* Reference box */
+  .ref-box { background: #f5f5f5; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+  .ref-label { font-size: 10px; font-weight: 700; color: #555; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 3px; }
+  .ref-value { font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #333; word-break: break-all; }
+
+  /* Note box */
+  .note-box { background: #fff4ef; border-left: 3px solid #FF6B35; padding: 10px 14px; margin-bottom: 10px; font-size: 12px; color: #333; line-height: 1.5; }
+
+  /* Footer */
+  .footer { background: #1A1A2E; padding: 18px 36px; text-align: center; }
+  .footer-q { font-size: 12px; color: rgba(255,255,255,0.55); margin-bottom: 4px; }
+  .footer-email { color: #FF6B35; font-size: 13px; font-weight: 600; text-decoration: none; }
+  .footer-copy { margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.3); }
 </style>
 </head>
 <body>
 <div class="card">
 
-  <!-- Header -->
   <div class="header">
     <img src="https://taskly.com.mx/logo.png" alt="Taskly" />
     <div class="status-badge">
@@ -1619,21 +1635,18 @@ const buildReceiptHTML = ({ jobTitle, piId, date, clientName, workerName, assign
     </div>
   </div>
 
-  <!-- Content -->
   <div class="content">
     <p class="greeting">${forWorker ? `Hola, ${workerName}` : `Hola, ${clientName}`}</p>
     <p class="subtitle">Tu pago por el servicio <strong>${jobTitle}</strong> ha sido procesado exitosamente.</p>
     <hr />
 
-    <!-- Service details -->
     <p class="section-label">Detalles del servicio</p>
     <table class="detail-table">
       <tr><td>Fecha</td><td>${date}</td></tr>
       <tr><td>${forWorker ? 'Cliente' : 'Trabajador'}</td><td>${forWorker ? clientName : workerName}</td></tr>
-      <tr><td>Método de pago</td><td>Tarjeta de crédito/débito</td></tr>
+      <tr><td>Método de pago</td><td>Tarjeta de crédito / débito</td></tr>
     </table>
 
-    <!-- Amount breakdown -->
     <p class="section-label">Desglose del pago</p>
     <table class="detail-table">
       <tr><td>Servicio acordado</td><td>$${Number(assignedPrice).toFixed(2)} MXN</td></tr>
@@ -1641,28 +1654,24 @@ const buildReceiptHTML = ({ jobTitle, piId, date, clientName, workerName, assign
       ${forWorker
         ? `<tr class="deduction"><td>Comisión Taskly (2.5%)</td><td>-$${Number(commission).toFixed(2)} MXN</td></tr>`
         : `<tr><td>Comisión de procesamiento</td><td>Incluida</td></tr>`}
+      <tr class="total-row">
+        <td>${forWorker ? 'Total que recibes' : 'Total cobrado'}</td>
+        <td>$${Number(forWorker ? workerReceives : clientTotal).toFixed(2)} MXN</td>
+      </tr>
     </table>
 
-    <!-- Total -->
-    <div class="total-box">
-      <span class="total-label">${forWorker ? 'Total que recibes' : 'Total cobrado'}</span>
-      <span class="total-amount">$${Number(forWorker ? workerReceives : clientTotal).toFixed(2)} MXN</span>
-    </div>
-
-    <!-- Reference -->
     <div class="ref-box">
       <div class="ref-label">Referencia de pago</div>
       <div class="ref-value">${piId || 'N/A'}</div>
     </div>
 
-    ${forWorker ? `<div class="note-box">El depósito a tu cuenta bancaria puede tardar hasta <strong>7 días hábiles</strong> para cuentas nuevas. Una vez establecida la cuenta, los depósitos son automáticos cada día hábil.</div>` : ''}
+    ${forWorker ? `<div class="note-box">El depósito puede tardar hasta <strong>7 días hábiles</strong> para cuentas nuevas. Una vez establecida, los depósitos son automáticos cada día hábil.</div>` : ''}
   </div>
 
-  <!-- Footer -->
   <div class="footer">
-    <p>¿Tienes alguna pregunta?</p>
-    <a href="mailto:soporte@taskly.com.mx">soporte@taskly.com.mx</a>
-    <p class="copy">&copy; ${new Date().getFullYear()} Taskly — Monterrey, México — <a href="https://taskly.com.mx">taskly.com.mx</a></p>
+    <p class="footer-q">¿Tienes alguna pregunta?</p>
+    <a class="footer-email" href="mailto:soporte@taskly.com.mx">soporte@taskly.com.mx</a>
+    <p class="footer-copy">&copy; ${new Date().getFullYear()} Taskly &mdash; Monterrey, México &mdash; taskly.com.mx</p>
   </div>
 
 </div>
