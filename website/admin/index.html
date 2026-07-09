@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Taskly Admin</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0A0A0A;color:#F5F5F5;min-height:100vh}
+    #login-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:32px}
+    #main{display:none;flex-direction:column;min-height:100vh}
+    .logo{font-size:28px;font-weight:900;color:#F5F5F5;margin-bottom:4px}
+    .logo span{color:#FF6B35}
+    .subtitle{font-size:13px;color:#888;margin-bottom:40px}
+    input{width:100%;max-width:340px;background:#151515;border:1px solid #252525;border-radius:12px;padding:14px 16px;color:#F5F5F5;font-size:15px;outline:none;margin-bottom:12px}
+    input:focus{border-color:#FF6B35}
+    button{width:100%;max-width:340px;background:#FF6B35;border:none;border-radius:12px;padding:14px;color:#fff;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:8px}
+    button:hover{opacity:.88}
+    button.secondary{background:#151515;border:1px solid #252525;color:#888}
+    button.danger{background:#E74C3C}
+    button.small{width:auto;padding:6px 12px;font-size:12px;border-radius:8px;margin:0;white-space:nowrap}
+    button.view-btn{background:#3498DB}
+    .error{color:#E74C3C;font-size:13px;margin-top:8px;max-width:340px;text-align:center}
+
+    /* ── Header ── */
+    header{background:#151515;border-bottom:1px solid #252525;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+    .header-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:1}
+    nav{display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap;padding-bottom:2px}
+    nav::-webkit-scrollbar{height:2px}
+    nav::-webkit-scrollbar-thumb{background:#333}
+    .nav-btn{background:none;border:none;color:#888;font-size:13px;font-weight:700;cursor:pointer;padding:8px 12px;border-radius:8px;margin:0;width:auto;white-space:nowrap}
+    .nav-btn.active,.nav-btn:hover{background:#FF6B35;color:#fff}
+
+    /* ── Content ── */
+    .content{padding:16px;flex:1;max-width:100%;overflow-x:hidden}
+    h2{font-size:18px;font-weight:800;margin-bottom:16px;color:#F5F5F5;display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+    .stats-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+    .stat-card{background:#151515;border:1px solid #252525;border-radius:12px;padding:16px;flex:1;min-width:120px}
+    .stat-num{font-size:28px;font-weight:900;color:#FF6B35}
+    .stat-label{font-size:11px;color:#888;margin-top:4px}
+
+    /* ── Tables ── */
+    .section-card{background:#151515;border:1px solid #252525;border-radius:16px;overflow:hidden;margin-bottom:20px}
+    .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+    table{width:100%;border-collapse:collapse;font-size:13px;min-width:500px}
+    th{text-align:left;padding:10px 12px;border-bottom:1px solid #252525;color:#888;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
+    td{padding:10px 12px;border-bottom:1px solid #151515;vertical-align:middle}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:#1a1a1a}
+    .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
+    .badge.pending{background:#F1C40F22;color:#F1C40F;border:1px solid #F1C40F}
+    .badge.verified{background:#2ECC7122;color:#2ECC71;border:1px solid #2ECC71}
+    .badge.rejected{background:#E74C3C22;color:#E74C3C;border:1px solid #E74C3C}
+    .badge.open{background:#3498DB22;color:#3498DB;border:1px solid #3498DB}
+    .badge.assigned{background:#FF6B3522;color:#FF6B35;border:1px solid #FF6B35}
+    .badge.completed{background:#2ECC7122;color:#2ECC71;border:1px solid #2ECC71}
+    .badge.resolved{background:#88888822;color:#888;border:1px solid #444}
+    .actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+    .empty{text-align:center;padding:40px;color:#888}
+    .tab-content{display:none}
+    .tab-content.active{display:block}
+    .refresh-btn{background:#1a1a1a;border:1px solid #252525;color:#888;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;width:auto;margin:0}
+    .refresh-btn:hover{background:#252525;color:#fff}
+    img.ine{max-width:160px;border-radius:8px;border:1px solid #252525;cursor:pointer;display:block}
+
+    /* ── Job Detail Modal ── */
+    .job-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;display:none;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto}
+    .job-modal-overlay.open{display:flex}
+    .job-modal{background:#151515;border:1px solid #252525;border-radius:20px;width:100%;max-width:640px;margin:auto;padding:24px}
+    .job-modal-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;gap:12px}
+    .job-modal h3{font-size:20px;font-weight:800;color:#F5F5F5}
+    .job-modal-close{background:#252525;border:none;color:#888;cursor:pointer;border-radius:8px;padding:6px 12px;font-size:13px;width:auto;margin:0}
+    .job-modal-close:hover{background:#333;color:#fff}
+    .jd-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+    .jd-pill{background:#252525;border-radius:20px;padding:4px 12px;font-size:12px;color:#aaa}
+    .jd-section{margin-bottom:16px}
+    .jd-label{font-size:10px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+    .jd-value{color:#F5F5F5;font-size:14px}
+    .bid-card{background:#0d0d0d;border:1px solid #252525;border-radius:10px;padding:10px 14px;margin-bottom:8px}
+    .bid-card .bid-name{font-weight:700;font-size:14px}
+    .bid-card .bid-price{color:#FF6B35;font-weight:800;font-size:16px}
+    .job-img{width:100%;max-height:220px;object-fit:cover;border-radius:12px;margin-bottom:12px;cursor:pointer}
+
+    /* ── Spinner ── */
+    .spinner{display:inline-block;width:20px;height:20px;border:3px solid #252525;border-top-color:#FF6B35;border-radius:50%;animation:spin .7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    @media(max-width:600px){
+      header{padding:10px 12px}
+      .content{padding:12px}
+      .stat-card{min-width:calc(50% - 6px)}
+      .job-modal{padding:16px}
+    }
+  </style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="logo">Task<span>ly</span></div>
+  <div class="subtitle">Panel de Administración</div>
+  <input type="email" id="admin-email" placeholder="vidalgarza1@hotmail.com" />
+  <input type="password" id="admin-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()" />
+  <button onclick="doLogin()">Entrar</button>
+  <div class="error" id="login-error"></div>
+</div>
+
+<!-- MAIN -->
+<div id="main">
+  <header>
+    <div class="header-left">
+      <div class="logo" style="font-size:18px;white-space:nowrap">Task<span>ly</span> Admin</div>
+      <nav>
+        <button class="nav-btn active" onclick="showTab('tab-resumen',this)">Resumen</button>
+        <button class="nav-btn" onclick="showTab('tab-jobs',this)">Trabajos</button>
+        <button class="nav-btn" onclick="showTab('tab-ine',this)">INE</button>
+        <button class="nav-btn" onclick="showTab('tab-business',this)">Empresas</button>
+        <button class="nav-btn" onclick="showTab('tab-reports',this)">Reportes</button>
+        <button class="nav-btn" onclick="showTab('tab-disputes',this)">Disputas</button>
+        <button class="nav-btn" onclick="showTab('tab-crashes',this)">Errores</button>
+      </nav>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+      <span id="admin-name" style="color:#888;font-size:12px"></span>
+      <button class="secondary small" onclick="doLogout()">Salir</button>
+    </div>
+  </header>
+
+  <div class="content">
+    <div class="stats-row" id="stats-row">
+      <div class="stat-card"><div class="stat-num" id="stat-open-jobs">-</div><div class="stat-label">Trabajos activos</div></div>
+      <div class="stat-card"><div class="stat-num" id="stat-pending-ine">-</div><div class="stat-label">INE pendientes</div></div>
+      <div class="stat-card"><div class="stat-num" id="stat-open-reports">-</div><div class="stat-label">Reportes abiertos</div></div>
+      <div class="stat-card"><div class="stat-num" id="stat-open-disputes">-</div><div class="stat-label">Disputas abiertas</div></div>
+      <div class="stat-card"><div class="stat-num" id="stat-crashes">-</div><div class="stat-label">Errores (7d)</div></div>
+    </div>
+
+    <!-- RESUMEN TAB -->
+    <div class="tab-content active" id="tab-resumen">
+      <h2>Resumen general <button class="refresh-btn" onclick="loadResumen()">↻</button></h2>
+      <div class="stats-row" id="resumen-users"></div>
+      <div class="stats-row" id="resumen-jobs"></div>
+      <div class="section-card" style="padding:20px" id="resumen-money"></div>
+      <div class="section-card" style="padding:20px" id="resumen-services"></div>
+    </div>
+
+    <!-- JOBS TAB -->
+    <div class="tab-content" id="tab-jobs">
+      <h2>Listados activos <button class="refresh-btn" onclick="loadJobs()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="jobs-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INE TAB -->
+    <div class="tab-content" id="tab-ine">
+      <h2>Verificaciones de Identidad <button class="refresh-btn" onclick="loadINE()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="ine-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BUSINESSES TAB -->
+    <div class="tab-content" id="tab-business">
+      <h2>Empresas <button class="refresh-btn" onclick="loadBusinesses()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="business-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REPORTS TAB -->
+    <div class="tab-content" id="tab-reports">
+      <h2>Reportes <button class="refresh-btn" onclick="loadReports()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="reports-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DISPUTES TAB -->
+    <div class="tab-content" id="tab-disputes">
+      <h2>Disputas <button class="refresh-btn" onclick="loadDisputes()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="disputes-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CRASHES TAB -->
+    <div class="tab-content" id="tab-crashes">
+      <h2>Errores de la app <button class="refresh-btn" onclick="loadCrashes()">↻</button></h2>
+      <div class="section-card">
+        <div class="table-wrap">
+          <div id="crashes-table"><div class="empty"><div class="spinner"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- JOB DETAIL MODAL -->
+<div class="job-modal-overlay" id="job-modal-overlay" onclick="if(event.target===this)closeJobModal()">
+  <div class="job-modal" id="job-modal-content"></div>
+</div>
+
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+  import { getFirestore, collection, getDocs, getDoc, doc, updateDoc, deleteDoc, addDoc,
+    query, where, orderBy, limit, serverTimestamp }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAL6G5NZ7qko4zsiXNylYuJ1TCVIaFarIU",
+    authDomain: "servicio-e7824.firebaseapp.com",
+    projectId: "servicio-e7824",
+    storageBucket: "servicio-e7824.firebasestorage.app",
+    messagingSenderId: "1084969190604",
+    appId: "1:1084969190604:web:2ad2bed99172070f90ee69",
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // ─── auth ──────────────────────────────────────────────────────────────────
+  window.doLogin = async () => {
+    const email = document.getElementById('admin-email').value.trim();
+    const pass  = document.getElementById('admin-pass').value;
+    document.getElementById('login-error').textContent = '';
+    try { await signInWithEmailAndPassword(auth, email, pass); }
+    catch { document.getElementById('login-error').textContent = 'Credenciales incorrectas.'; }
+  };
+  window.doLogout = () => signOut(auth);
+
+  onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('main').style.display = 'none';
+      return;
+    }
+    const snap = await getDoc(doc(db, 'users', user.uid));
+    if (!snap.exists() || !snap.data().isAdmin) {
+      document.getElementById('login-error').textContent = 'Sin permisos de administrador.';
+      await signOut(auth);
+      return;
+    }
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('main').style.display = 'flex';
+    document.getElementById('admin-name').textContent = snap.data().name || user.email;
+    loadAll();
+  });
+
+  // ─── navigation ────────────────────────────────────────────────────────────
+  window.showTab = (id, btn) => {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    if (btn) btn.classList.add('active');
+  };
+
+  function loadAll() { loadResumen(); loadJobs(); loadINE(); loadBusinesses(); loadReports(); loadDisputes(); loadCrashes(); }
+
+  // ─── In-app notification (mirrors the app's createNotification shape) ───────
+  async function notifyUser(userId, type, message) {
+    try {
+      await addDoc(collection(db, 'notifications'), {
+        userId, type, message, jobId: null, read: false, createdAt: serverTimestamp(),
+      });
+      const userSnap = await getDoc(doc(db, 'users', userId));
+      const pushToken = userSnap.data()?.pushToken;
+      if (pushToken?.startsWith('ExponentPushToken')) {
+        fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: pushToken, title: 'Taskly', body: message }),
+        }).catch(() => {});
+      }
+    } catch (e) { console.warn('notify failed', e); }
+  }
+
+  // ─── Resumen (analytics) ─────────────────────────────────────────────────────
+  window.loadResumen = async () => {
+    try {
+      const [usersSnap, jobsSnap] = await Promise.all([
+        getDocs(collection(db, 'users')),
+        getDocs(collection(db, 'jobs')),
+      ]);
+      const users = usersSnap.docs.map(d => d.data());
+      const jobs = jobsSnap.docs.map(d => d.data());
+      const completed = jobs.filter(j => j.status === 'completed');
+      const weekAgo = Date.now() - 7 * 86400000;
+      const monthAgo = Date.now() - 30 * 86400000;
+      const ts = j => j.createdAt?.toMillis?.() ?? 0;
+
+      const stat = (num, label, color = '#FF6B35') =>
+        `<div class="stat-card"><div class="stat-num" style="color:${color}">${num}</div><div class="stat-label">${label}</div></div>`;
+
+      document.getElementById('resumen-users').innerHTML =
+        stat(users.length, 'Usuarios totales') +
+        stat(users.filter(u => u.role === 'worker').length, 'Trabajadores', '#3498DB') +
+        stat(users.filter(u => u.role === 'client').length, 'Clientes', '#2ECC71') +
+        stat(users.filter(u => u.verificationStatus === 'verified').length, 'Verificados (INE)', '#2ECC71');
+
+      document.getElementById('resumen-jobs').innerHTML =
+        stat(jobs.length, 'Trabajos totales') +
+        stat(jobs.filter(j => j.status === 'open').length, 'Abiertos', '#3498DB') +
+        stat(jobs.filter(j => j.status === 'assigned' || j.status === 'pending_payment').length, 'En curso', '#F1C40F') +
+        stat(completed.length, 'Completados', '#2ECC71') +
+        stat(jobs.filter(j => ts(j) >= weekAgo).length, 'Nuevos (7d)') +
+        stat(jobs.filter(j => ts(j) >= monthAgo).length, 'Nuevos (30d)');
+
+      const gmv = completed.reduce((s, j) => s + (j.assignedPrice || 0), 0);
+      const cardGmv = completed.filter(j => j.paymentMethod !== 'cash').reduce((s, j) => s + (j.assignedPrice || 0), 0);
+      const money = n => n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      document.getElementById('resumen-money').innerHTML = `
+        <h2 style="margin-bottom:12px">💰 Dinero</h2>
+        <div style="display:flex;gap:32px;flex-wrap:wrap">
+          <div><div class="stat-num">$${money(gmv)}</div><div class="stat-label">Valor total de trabajos completados (MXN)</div></div>
+          <div><div class="stat-num" style="color:#3498DB">$${money(cardGmv)}</div><div class="stat-label">Pagado con tarjeta (MXN)</div></div>
+          <div><div class="stat-num" style="color:#2ECC71">$${money(cardGmv * 0.025)}</div><div class="stat-label">Comisión Taskly estimada 2.5% (MXN)</div></div>
+        </div>`;
+
+      const typeCounts = {};
+      jobs.forEach(j => { typeCounts[j.type || 'otro'] = (typeCounts[j.type || 'otro'] || 0) + 1; });
+      const max = Math.max(1, ...Object.values(typeCounts));
+      const labels = { plumbing: '🔧 Plomería', electrical: '⚡ Electricidad', cleaning: '🧹 Limpieza', painting: '🎨 Pintura', carpentry: '🪚 Carpintería', ac: '❄️ A/C', other: '🔩 Otro' };
+      document.getElementById('resumen-services').innerHTML = `
+        <h2 style="margin-bottom:12px">📊 Trabajos por categoría</h2>
+        ${Object.entries(typeCounts).sort((a, b) => b[1] - a[1]).map(([t, n]) => `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <div style="width:120px;font-size:13px;color:#aaa">${labels[t] || t}</div>
+            <div style="flex:1;background:#252525;border-radius:6px;height:18px;overflow:hidden">
+              <div style="width:${(n / max) * 100}%;height:100%;background:#FF6B35;border-radius:6px"></div>
+            </div>
+            <div style="width:30px;text-align:right;font-weight:700;font-size:13px">${n}</div>
+          </div>`).join('')}`;
+    } catch (e) { console.warn('resumen failed', e); }
+  };
+
+  // ─── Businesses ──────────────────────────────────────────────────────────────
+  window.loadBusinesses = async () => {
+    const el = document.getElementById('business-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(collection(db, 'businesses'));
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.verificationStatus === 'pending' ? -1 : 1) - (b.verificationStatus === 'pending' ? -1 : 1));
+      if (!all.length) { el.innerHTML = '<div class="empty">Sin empresas registradas</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Empresa</th><th>Dueño</th><th>Miembros</th><th>Comprobante</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${all.map(b => `
+          <tr>
+            <td style="font-weight:600">${b.logo ? `<img src="${b.logo}" style="width:28px;height:28px;border-radius:7px;vertical-align:middle;margin-right:8px">` : ''}${b.name || '—'}<br><span style="color:#666;font-size:11px">${b.description || ''}</span></td>
+            <td style="color:#aaa">${b.ownerName || '—'}</td>
+            <td style="text-align:center">${(b.memberIds || []).length}</td>
+            <td>${b.proofUrl ? `<img class="ine" src="${b.proofUrl}" onclick="window.open('${b.proofUrl}','_blank')" />` : '<span style="color:#E74C3C;font-size:12px">Sin comprobante</span>'}</td>
+            <td><span class="badge ${b.verificationStatus === 'verified' ? 'verified' : b.verificationStatus === 'rejected' ? 'rejected' : 'pending'}">${(b.verificationStatus || 'pending').toUpperCase()}</span></td>
+            <td class="actions">
+              ${b.verificationStatus !== 'verified' ? `<button class="small" style="background:#2ECC71" onclick="setBusiness('${b.id}','verified')">✓ Aprobar</button>` : ''}
+              ${b.verificationStatus !== 'rejected' ? `<button class="small danger" onclick="setBusiness('${b.id}','rejected')">✗ Rechazar</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody></table>`;
+      window._bizCache = all;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.setBusiness = async (id, status) => {
+    const biz = window._bizCache?.find(b => b.id === id);
+    if (!confirm(`¿${status === 'verified' ? 'Aprobar' : 'Rechazar'} la empresa "${biz?.name || id}"?`)) return;
+    await updateDoc(doc(db, 'businesses', id), { verificationStatus: status, verificationReviewedAt: serverTimestamp() });
+    if (biz?.ownerId) {
+      await notifyUser(biz.ownerId,
+        status === 'verified' ? 'business_approved' : 'business_rejected',
+        status === 'verified'
+          ? `🏢 ¡Tu empresa "${biz.name}" fue aprobada! Ya aparece en el directorio de empresas.`
+          : `❌ Tu empresa "${biz.name}" no fue aprobada. Revisa que el comprobante sea legible y vuelve a intentarlo.`);
+    }
+    loadBusinesses();
+  };
+
+  // ─── Job detail modal ──────────────────────────────────────────────────────
+  window.closeJobModal = () => {
+    document.getElementById('job-modal-overlay').classList.remove('open');
+  };
+
+  window.viewJob = (id) => {
+    const job = window._jobsCache?.find(j => j.id === id);
+    if (!job) return;
+    const statusColors = { open:'#3498DB', assigned:'#FF6B35', completed:'#2ECC71' };
+    const sc = statusColors[job.status] || '#888';
+    const bids = (job.bids || []);
+    const images = (job.images || (job.imageUrl ? [{ url: job.imageUrl }] : []));
+    document.getElementById('job-modal-content').innerHTML = `
+      <div class="job-modal-header">
+        <div>
+          <h3>${job.title || 'Sin título'}</h3>
+          <div class="jd-row" style="margin-top:8px">
+            <span class="badge" style="background:${sc}22;color:${sc};border:1px solid ${sc}">${(job.status||'open').toUpperCase()}</span>
+            <span class="jd-pill">${job.type || '—'}</span>
+            ${job.isUrgent ? '<span class="jd-pill" style="background:#F1C40F22;color:#F1C40F">⚡ Urgente</span>' : ''}
+            <span class="jd-pill">${job.paymentMethod === 'cash' ? '💵 Efectivo' : '💳 Tarjeta'}</span>
+          </div>
+        </div>
+        <button class="job-modal-close" onclick="closeJobModal()">✕ Cerrar</button>
+      </div>
+
+      ${images.length ? images.map(i => `<img class="job-img" src="${i.url||i}" onclick="window.open('${i.url||i}','_blank')" />`).join('') : ''}
+
+      <div class="jd-row">
+        <div style="flex:1">
+          <div class="jd-label">Presupuesto</div>
+          <div class="jd-value">$${job.budgetMin||0}–$${job.budgetMax||0} MXN</div>
+        </div>
+        <div style="flex:1">
+          <div class="jd-label">Precio acordado</div>
+          <div class="jd-value">${job.assignedPrice ? '$'+job.assignedPrice+' MXN' : '—'}</div>
+        </div>
+        <div style="flex:1">
+          <div class="jd-label">Publicado</div>
+          <div class="jd-value">${job.createdAt?.toDate ? job.createdAt.toDate().toLocaleDateString('es-MX') : '—'}</div>
+        </div>
+      </div>
+
+      <div class="jd-section">
+        <div class="jd-label">Descripción</div>
+        <div class="jd-value" style="color:#aaa;line-height:1.6">${job.description || '—'}</div>
+      </div>
+
+      <div class="jd-row">
+        <div style="flex:1">
+          <div class="jd-label">Cliente</div>
+          <div class="jd-value">${job.userName || job.userId || '—'}</div>
+        </div>
+        <div style="flex:1">
+          <div class="jd-label">Trabajador asignado</div>
+          <div class="jd-value">${job.assignedWorkerName || (job.assignedTo ? job.assignedTo.slice(0,8)+'…' : '—')}</div>
+        </div>
+        <div style="flex:1">
+          <div class="jd-label">Zona</div>
+          <div class="jd-value">${job.estimatedLocation?.area || job.location || '—'}</div>
+        </div>
+      </div>
+
+      <div class="jd-section">
+        <div class="jd-label">Propuestas (${bids.length})</div>
+        ${bids.length ? bids.map(b => `
+          <div class="bid-card">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span class="bid-name">${b.userName || '—'}</span>
+              <span class="bid-price">$${b.price} MXN</span>
+            </div>
+            ${b.message ? `<div style="color:#888;font-size:12px;margin-top:4px">${b.message}</div>` : ''}
+          </div>`).join('') : '<div style="color:#666;font-size:13px">Sin propuestas aún</div>'}
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="small danger" style="flex:1" onclick="deleteJobFromModal('${job.id}')">🗑 Eliminar listado</button>
+      </div>
+    `;
+    document.getElementById('job-modal-overlay').classList.add('open');
+  };
+
+  window.deleteJobFromModal = async (id) => {
+    if (!confirm('¿Eliminar este trabajo permanentemente?')) return;
+    await deleteDoc(doc(db, 'jobs', id));
+    closeJobModal();
+    loadJobs();
+  };
+
+  // ─── Jobs ──────────────────────────────────────────────────────────────────
+  window.loadJobs = async () => {
+    const el = document.getElementById('jobs-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'jobs'), orderBy('createdAt', 'desc'), limit(200)));
+      const jobs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      window._jobsCache = jobs;
+      const active = jobs.filter(j => j.status === 'open' || j.status === 'assigned');
+      document.getElementById('stat-open-jobs').textContent = active.length;
+      if (!jobs.length) { el.innerHTML = '<div class="empty">Sin trabajos</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Título</th><th>Cliente</th><th>Estado</th><th>Propuestas</th><th>Fecha</th><th>Acciones</th></tr></thead>
+        <tbody>${jobs.map(j => `
+          <tr>
+            <td style="font-weight:600;max-width:200px;word-break:break-word">${j.title || '—'}</td>
+            <td style="color:#aaa">${j.userName || j.userId?.slice(0,8) || '—'}</td>
+            <td><span class="badge ${j.status||'open'}">${(j.status||'open').toUpperCase()}</span></td>
+            <td style="text-align:center">${(j.bids||[]).length}</td>
+            <td style="color:#888;white-space:nowrap">${j.createdAt?.toDate ? j.createdAt.toDate().toLocaleDateString('es-MX') : '—'}</td>
+            <td class="actions">
+              <button class="small view-btn" onclick="viewJob('${j.id}')">👁 Ver</button>
+              <button class="small danger" onclick="deleteJob('${j.id}')">🗑</button>
+            </td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.deleteJob = async (id) => {
+    if (!confirm('¿Eliminar este trabajo permanentemente?')) return;
+    await deleteDoc(doc(db, 'jobs', id));
+    loadJobs();
+  };
+
+  // ─── INE ───────────────────────────────────────────────────────────────────
+  window.loadINE = async () => {
+    const el = document.getElementById('ine-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'users'), where('role', '==', 'worker')));
+      const workers = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(w => w.verificationStatus && w.verificationStatus !== 'unverified')
+        .sort((a, b) => (a.verificationStatus === 'pending' ? -1 : 1) - (b.verificationStatus === 'pending' ? -1 : 1));
+      document.getElementById('stat-pending-ine').textContent = workers.filter(w => w.verificationStatus === 'pending').length;
+      if (!workers.length) { el.innerHTML = '<div class="empty">Sin verificaciones de INE</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Trabajador</th><th>Email</th><th>Estado</th><th>INE (frente / reverso)</th><th>Acciones</th></tr></thead>
+        <tbody>${workers.map(w => `
+          <tr>
+            <td style="font-weight:600">${w.name||'—'}</td>
+            <td style="color:#aaa">${w.email||'—'}</td>
+            <td><span class="badge ${w.verificationStatus==='verified'?'verified':w.verificationStatus==='pending'?'pending':'rejected'}">${(w.verificationStatus||'—').toUpperCase()}</span></td>
+            <td><div style="display:flex;gap:8px">
+              ${w.ineImages?.front ? `<img class="ine" src="${w.ineImages.front}" onclick="window.open('${w.ineImages.front}','_blank')" />` : '<span style="color:#666;font-size:12px">Sin frente</span>'}
+              ${w.ineImages?.back ? `<img class="ine" src="${w.ineImages.back}" onclick="window.open('${w.ineImages.back}','_blank')" />` : '<span style="color:#666;font-size:12px">Sin reverso</span>'}
+              ${w.ineImages?.selfie ? `<img class="ine" src="${w.ineImages.selfie}" onclick="window.open('${w.ineImages.selfie}','_blank')" title="Selfie — debe coincidir con la INE" />` : '<span style="color:#666;font-size:12px">Sin selfie</span>'}
+            </div></td>
+            <td class="actions">
+              ${w.verificationStatus === 'pending' ? `
+                <button class="small" style="background:#2ECC71" onclick="setINE('${w.id}','verified')">✓ Aprobar</button>
+                <button class="small danger" onclick="setINE('${w.id}','unverified')">✗ Rechazar</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.setINE = async (uid, status) => {
+    if (!confirm(`¿${status==='verified'?'Aprobar':'Rechazar'} la verificación?`)) return;
+    await updateDoc(doc(db, 'users', uid), { verificationStatus: status, verificationReviewedAt: serverTimestamp() });
+    await notifyUser(uid,
+      status === 'verified' ? 'account_verified' : 'account_rejected',
+      status === 'verified'
+        ? '✅ ¡Tu identidad fue verificada! Ahora apareces con el sello de cuenta verificada.'
+        : '❌ Tu solicitud de verificación no fue aprobada. Intenta de nuevo con fotos más claras de tu INE.');
+    loadINE();
+  };
+
+  // ─── Reports ───────────────────────────────────────────────────────────────
+  window.loadReports = async () => {
+    const el = document.getElementById('reports-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'reports'), orderBy('createdAt', 'desc'), limit(100)));
+      const reports = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      document.getElementById('stat-open-reports').textContent = reports.filter(r => r.status !== 'resolved').length;
+      if (!reports.length) { el.innerHTML = '<div class="empty">Sin reportes</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Fecha</th><th>Denunciante</th><th>Motivo</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${reports.map(r => `
+          <tr>
+            <td style="white-space:nowrap">${r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString('es-MX') : '—'}</td>
+            <td>${r.reporterName||r.reporterId||'—'}</td>
+            <td style="color:#aaa;max-width:200px">${r.reason||'—'}</td>
+            <td><span class="badge ${r.status||'open'}">${(r.status||'open').toUpperCase()}</span></td>
+            <td class="actions">
+              <button class="small" onclick="resolveReport('${r.id}')">✓</button>
+              <button class="small danger" onclick="deleteReport('${r.id}')">🗑</button>
+            </td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.resolveReport = async (id) => { await updateDoc(doc(db, 'reports', id), { status: 'resolved' }); loadReports(); };
+  window.deleteReport = async (id) => { if(!confirm('¿Eliminar?'))return; await deleteDoc(doc(db,'reports',id)); loadReports(); };
+
+  // ─── Disputes ──────────────────────────────────────────────────────────────
+  window.loadDisputes = async () => {
+    const el = document.getElementById('disputes-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'disputes'), orderBy('createdAt', 'desc'), limit(100)));
+      const disputes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      document.getElementById('stat-open-disputes').textContent = disputes.filter(d => d.status === 'open').length;
+      if (!disputes.length) { el.innerHTML = '<div class="empty">Sin disputas</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Fecha</th><th>Trabajo</th><th>Reportado por</th><th>Motivo</th><th>Monto</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody>${disputes.map(d => `
+          <tr>
+            <td style="white-space:nowrap">${d.createdAt?.toDate ? d.createdAt.toDate().toLocaleDateString('es-MX') : '—'}</td>
+            <td style="max-width:160px;word-break:break-word">${d.jobTitle||d.jobId||'—'}</td>
+            <td>${d.reporterName||'—'}</td>
+            <td style="color:#aaa;font-size:12px;max-width:180px">${d.reason||'—'}<br>${d.description||''}</td>
+            <td style="white-space:nowrap">$${d.amount||0} MXN</td>
+            <td><span class="badge ${d.status==='open'?'open':'resolved'}">${d.status==='open'?'Abierta':'Resuelta'}</span></td>
+            <td class="actions">
+              ${d.status==='open'?`<button class="small" onclick="resolveDispute('${d.id}')">✓</button>`:''}
+              <button class="small danger" onclick="deleteDispute('${d.id}')">🗑</button>
+            </td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.resolveDispute = async (id) => { await updateDoc(doc(db,'disputes',id),{status:'resolved',resolvedAt:serverTimestamp()}); loadDisputes(); };
+  window.deleteDispute = async (id) => { if(!confirm('¿Eliminar?'))return; await deleteDoc(doc(db,'disputes',id)); loadDisputes(); };
+
+  // ─── Crashes ───────────────────────────────────────────────────────────────
+  window.loadCrashes = async () => {
+    const el = document.getElementById('crashes-table');
+    el.innerHTML = '<div class="empty"><div class="spinner"></div></div>';
+    try {
+      const snap = await getDocs(query(collection(db, 'crashReports'), orderBy('createdAt', 'desc'), limit(50)));
+      const crashes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const recent = crashes.filter(c => c.createdAt?.toDate && c.createdAt.toDate() > new Date(Date.now() - 7*86400000));
+      document.getElementById('stat-crashes').textContent = recent.length;
+      if (!crashes.length) { el.innerHTML = '<div class="empty">Sin errores registrados</div>'; return; }
+      el.innerHTML = `<table>
+        <thead><tr><th>Fecha</th><th>Error</th><th></th></tr></thead>
+        <tbody>${crashes.map(c => `
+          <tr>
+            <td style="white-space:nowrap">${c.createdAt?.toDate ? c.createdAt.toDate().toLocaleString('es-MX') : '—'}</td>
+            <td style="color:#aaa;font-size:12px;word-break:break-word">${c.message||'—'}</td>
+            <td><button class="small danger" onclick="deleteCrash('${c.id}')">🗑</button></td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (e) { el.innerHTML = `<div class="empty">Error: ${e.message}</div>`; }
+  };
+
+  window.deleteCrash = async (id) => { await deleteDoc(doc(db,'crashReports',id)); loadCrashes(); };
+</script>
+</body>
+</html>

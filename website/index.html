@@ -1,0 +1,1478 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Taskly conecta clientes con trabajadores verificados de servicios del hogar en Monterrey y su área metropolitana. Plomería, electricidad, limpieza y más.">
+<title>Taskly — Servicios del hogar en Monterrey</title>
+<link rel="icon" type="image/png" href="/favicon.png?v=2">
+<link rel="apple-touch-icon" href="/logo-512.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<!-- Ionicons — same icon set as the Taskly app -->
+<script type="module" src="https://unpkg.com/ionicons@7.4.0/dist/ionicons/ionicons.esm.js"></script>
+<script nomodule src="https://unpkg.com/ionicons@7.4.0/dist/ionicons/ionicons.js"></script>
+<meta property="og:title" content="Taskly — Servicios del hogar en Monterrey">
+<meta property="og:description" content="Conectamos tu hogar con plomeros, electricistas y técnicos verificados en tu colonia. Publica tu trabajo, compara propuestas y paga seguro.">
+<meta property="og:image" content="https://taskly.com.mx/logo-512.png">
+<meta property="og:url" content="https://taskly.com.mx">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://taskly.com.mx/">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Taskly",
+  "url": "https://taskly.com.mx",
+  "logo": "https://taskly.com.mx/logo-512.png",
+  "email": "soporte@taskly.com.mx",
+  "description": "Plataforma que conecta clientes con trabajadores verificados de servicios del hogar en Monterrey y su área metropolitana: plomería, electricidad, limpieza, carpintería, pintura y aire acondicionado.",
+  "areaServed": ["Monterrey", "San Pedro Garza García", "Guadalupe", "Santa Catarina", "General Escobedo", "San Nicolás de los Garza"],
+  "contactPoint": {
+    "@type": "ContactPoint",
+    "email": "soporte@taskly.com.mx",
+    "contactType": "customer support",
+    "availableLanguage": "Spanish"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "¿Cuánto cuesta usar Taskly?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Publicar un trabajo es gratis y tú acuerdas el precio directamente con el trabajador. Si pagas con tarjeta se agrega una comisión de servicio del 2.5% más el procesamiento del pago (3.6% + $3 MXN), desglosados antes de confirmar. El pago en efectivo no tiene comisión." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿Cómo verifican a los trabajadores?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Cada trabajador debe enviar su identificación oficial (INE), que el equipo de Taskly revisa antes de otorgarle el distintivo de Verificado. Además, su perfil muestra calificaciones y reseñas reales de otros clientes." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿Cómo se protege mi pago?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Al pagar con tarjeta, tu dinero queda protegido en la plataforma y se libera al trabajador únicamente cuando ambas partes confirman que el trabajo fue completado satisfactoriamente." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿Qué pasa si algo sale mal con un trabajo?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Puedes abrir una disputa dentro de la app durante las 72 horas siguientes a que el trabajo se marque como completado. El equipo de Taskly revisa cada caso y emite una resolución en un máximo de 5 días hábiles." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿En qué ciudades está disponible Taskly?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Taskly opera en Monterrey y su área metropolitana: Monterrey, San Pedro Garza García, Guadalupe, Santa Catarina, Escobedo y San Nicolás de los Garza." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿Cómo me registro como trabajador?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Escríbenos a soporte@taskly.com.mx con el asunto 'Quiero ser trabajador', cuéntanos tu oficio y tu zona, y te avisamos en cuanto abra el registro de trabajadores en la app." }
+    },
+    {
+      "@type": "Question",
+      "name": "¿Cuándo estará disponible la app?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Muy pronto. Taskly llegará primero a Monterrey y su área metropolitana, disponible en App Store y Google Play." }
+    }
+  ]
+}
+</script>
+<!-- Google Analytics (GA4) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-Q2KNW2ECNX"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-Q2KNW2ECNX', { anonymize_ip: true });
+</script>
+<style>
+  :root {
+    --bg: #0A0A0A;
+    --card: #151515;
+    --accent: #FF6B35;
+    --text: #F5F5F5;
+    --muted: #888;
+    --border: #252525;
+    --radius: 16px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 80px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  .container {
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+
+  /* ───────────── Nav ───────────── */
+  .nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    background: rgba(10, 10, 10, 0.82);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 64px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.3rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .logo-mark {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    display: block;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 28px;
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  .nav-links a {
+    transition: color 0.2s ease;
+    padding: 6px 0;
+  }
+
+  .nav-links a:hover, .nav-links a:focus-visible { color: var(--text); }
+
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  /* Hamburger toggle — hidden on desktop, shown on mobile */
+  .nav-toggle {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  .nav-toggle span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    margin: 0 auto;
+    background: var(--text);
+    border-radius: 2px;
+    transition: transform 0.25s ease, opacity 0.2s ease;
+  }
+
+  .nav-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .nav-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+  .nav-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ───────────── Hero (parallax) ───────────── */
+  .hero {
+    position: relative;
+    min-height: 100svh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    text-align: center;
+  }
+
+  /* parallax layer: background gradient — moves slowest */
+  .hero-bg {
+    position: absolute;
+    inset: -25% 0;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% 38%, rgba(255, 107, 53, 0.22), transparent 70%),
+      radial-gradient(ellipse 45% 35% at 50% 30%, rgba(255, 107, 53, 0.14), transparent 65%);
+    will-change: transform;
+    pointer-events: none;
+  }
+
+  /* faint grid texture for depth */
+  .hero-bg::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 65% 55% at 50% 40%, #000 30%, transparent 75%);
+    mask-image: radial-gradient(ellipse 65% 55% at 50% 40%, #000 30%, transparent 75%);
+  }
+
+  /* parallax layer: content — drifts up slower than scroll */
+  .hero-content {
+    position: relative;
+    z-index: 2;
+    padding: 110px 20px 60px;
+    max-width: 760px;
+    will-change: transform, opacity;
+  }
+
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid rgba(255, 107, 53, 0.35);
+    background: rgba(255, 107, 53, 0.08);
+    padding: 7px 16px;
+    border-radius: 999px;
+    margin-bottom: 26px;
+  }
+
+  .hero-eyebrow::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+  }
+
+  .hero h1 {
+    font-size: clamp(2.4rem, 7vw, 4.2rem);
+    font-weight: 800;
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+    margin-bottom: 22px;
+  }
+
+  .hero h1 .accent {
+    background: linear-gradient(95deg, var(--accent), #ffa36b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hero-sub {
+    font-size: clamp(1rem, 2.4vw, 1.2rem);
+    color: var(--muted);
+    max-width: 560px;
+    margin: 0 auto 38px;
+  }
+
+  /* App store chips */
+  .store-chips {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 10px 20px;
+    min-width: 185px;
+    cursor: default;
+    user-select: none;
+    opacity: 0.7;
+    filter: grayscale(0.4);
+    text-align: left;
+  }
+
+  .chip svg { width: 26px; height: 26px; flex-shrink: 0; fill: var(--muted); }
+
+  .chip-text { line-height: 1.25; }
+  .chip-text small {
+    display: block;
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .chip-text strong {
+    font-size: 0.98rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .scroll-hint {
+    position: absolute;
+    bottom: 26px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--muted);
+    font-size: 1.3rem;
+    animation: bob 2.2s ease-in-out infinite;
+    z-index: 2;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translate(-50%, 0); }
+    50% { transform: translate(-50%, 8px); }
+  }
+
+  /* ───────────── Sections ───────────── */
+  section { position: relative; z-index: 3; background: var(--bg); }
+
+  .section-pad { padding: 90px 0; }
+
+  .section-head { text-align: center; margin-bottom: 54px; }
+
+  .section-head .kicker {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  .section-head h2 {
+    font-size: clamp(1.7rem, 4.5vw, 2.5rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .section-head p {
+    color: var(--muted);
+    max-width: 520px;
+    margin: 14px auto 0;
+  }
+
+  /* ───────────── Trust bar ───────────── */
+  .trust {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 44px 0;
+  }
+
+  .trust-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+  }
+
+  .trust-item { text-align: center; }
+
+  .trust-item .big {
+    font-size: clamp(1.3rem, 3.4vw, 1.9rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .trust-item .big .hl { color: var(--accent); }
+
+  .seal-icon { color: var(--accent); vertical-align: -3px; }
+
+  .trust-item .label {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ───────────── Services grid ───────────── */
+  .services-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+
+  .service-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 30px 26px;
+    transition: transform 0.25s ease, border-color 0.25s ease;
+  }
+
+  .service-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(255, 107, 53, 0.45);
+  }
+
+  .service-icon {
+    --ic: var(--accent);
+    width: 52px; height: 52px;
+    border-radius: 13px;
+    background: linear-gradient(135deg,
+      color-mix(in srgb, var(--ic) 18%, transparent),
+      color-mix(in srgb, var(--ic) 5%, transparent));
+    border: 1px solid color-mix(in srgb, var(--ic) 28%, transparent);
+    display: grid;
+    place-items: center;
+    font-size: 1.5rem;
+    color: var(--ic);
+    margin-bottom: 18px;
+  }
+
+  .service-icon ion-icon {
+    font-size: 1.7rem;
+  }
+
+  .service-card h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .service-card p {
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+
+  /* ───────────── How it works ───────────── */
+  .steps-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+  }
+
+  .step {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 24px;
+    position: relative;
+  }
+
+  .step-num {
+    display: inline-grid;
+    place-items: center;
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #0A0A0A;
+    font-weight: 800;
+    font-size: 1rem;
+    margin-bottom: 16px;
+  }
+
+  .step h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .step p {
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+
+  /* ───────────── App showcase (phone mockup) ───────────── */
+  .showcase-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: center;
+    gap: 48px;
+  }
+
+  .showcase-copy .kicker {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  .showcase-copy h2 {
+    font-size: clamp(1.7rem, 4.5vw, 2.5rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin-bottom: 14px;
+  }
+
+  .showcase-copy > p {
+    color: var(--muted);
+    margin-bottom: 26px;
+  }
+
+  .check-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .check-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: 0.98rem;
+  }
+
+  .check-list li::before {
+    content: "✓";
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: rgba(255, 107, 53, 0.15);
+    border: 1px solid rgba(255, 107, 53, 0.4);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 800;
+    display: grid;
+    place-items: center;
+    margin-top: 2px;
+  }
+
+  .phone-wrap { display: flex; justify-content: center; }
+
+  .phone {
+    width: 290px;
+    border: 3px solid #2e2e2e;
+    border-radius: 44px;
+    background: #000;
+    padding: 12px;
+    position: relative;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 60px rgba(255,107,53,0.08);
+  }
+
+  .phone-notch {
+    position: absolute;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    width: 110px; height: 26px;
+    background: #000;
+    border-radius: 0 0 16px 16px;
+    z-index: 2;
+  }
+
+  .phone-screen {
+    background: var(--bg);
+    border-radius: 34px;
+    overflow: hidden;
+    padding: 44px 14px 20px;
+  }
+
+  .app-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 800;
+    font-size: 1rem;
+    margin-bottom: 14px;
+  }
+
+  .app-header img { width: 24px; height: 24px; border-radius: 6px; }
+
+  .app-chips {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .app-chips span {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--muted);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 5px 12px;
+    white-space: nowrap;
+  }
+
+  .app-chips span.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #0A0A0A;
+  }
+
+  .app-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 13px 14px;
+    margin-bottom: 10px;
+  }
+
+  .app-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .app-cat { font-size: 0.7rem; color: var(--muted); font-weight: 600; }
+  .app-chips ion-icon, .app-cat ion-icon, .app-meta ion-icon { vertical-align: -2px; font-size: 1em; }
+
+  .app-urgent {
+    font-size: 0.58rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: #0A0A0A;
+    background: var(--accent);
+    border-radius: 5px;
+    padding: 2px 7px;
+  }
+
+  .app-title { font-size: 0.85rem; font-weight: 700; margin-bottom: 3px; }
+
+  .app-meta { font-size: 0.7rem; color: var(--muted); margin-bottom: 8px; }
+
+  .app-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .app-price { font-size: 0.85rem; font-weight: 800; color: var(--accent); }
+
+  .app-bids { font-size: 0.68rem; color: var(--muted); }
+
+  /* ───────────── Pricing ───────────── */
+  .pricing-note {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-top: 26px;
+  }
+
+  /* ───────────── Coverage map ───────────── */
+  .map-card {
+    position: relative;
+    height: 360px;
+    background:
+      radial-gradient(ellipse 60% 60% at 50% 50%, rgba(255,107,53,0.07), transparent 70%),
+      var(--card);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    overflow: hidden;
+  }
+
+  .map-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, #000 40%, transparent 80%);
+    mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, #000 40%, transparent 80%);
+  }
+
+  .map-dot {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .map-dot .dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+    position: relative;
+  }
+
+  .map-dot .dot::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 107, 53, 0.5);
+    animation: pulse 2.4s ease-out infinite;
+  }
+
+  .map-dot:nth-child(2) .dot::after { animation-delay: 0.4s; }
+  .map-dot:nth-child(3) .dot::after { animation-delay: 0.8s; }
+  .map-dot:nth-child(4) .dot::after { animation-delay: 1.2s; }
+  .map-dot:nth-child(5) .dot::after { animation-delay: 1.6s; }
+  .map-dot:nth-child(6) .dot::after { animation-delay: 2.0s; }
+
+  @keyframes pulse {
+    0% { transform: scale(0.6); opacity: 1; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+
+  .map-dot .dot-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text);
+    background: rgba(10, 10, 10, 0.75);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 11px;
+    white-space: nowrap;
+  }
+
+  /* Real map (Leaflet) sits above the fallback dots; dots only show if the CDN fails */
+  #coverage-map {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+  }
+
+  .leaflet-container {
+    background: #0A0A0A;
+    font-family: inherit;
+  }
+
+  .map-tip {
+    background: rgba(10, 10, 10, 0.82);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.78rem;
+    padding: 3px 11px;
+    box-shadow: none;
+  }
+
+  .map-tip::before { display: none; }
+
+  /* ───────────── FAQ ───────────── */
+  .faq-list {
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .faq-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: border-color 0.25s ease;
+  }
+
+  .faq-item[open] { border-color: rgba(255, 107, 53, 0.45); }
+
+  .faq-item summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 22px;
+    font-weight: 700;
+    font-size: 0.98rem;
+  }
+
+  .faq-item summary::-webkit-details-marker { display: none; }
+
+  .faq-item summary::after {
+    content: "+";
+    flex-shrink: 0;
+    font-size: 1.3rem;
+    font-weight: 400;
+    color: var(--accent);
+    transition: transform 0.25s ease;
+  }
+
+  .faq-item[open] summary::after { transform: rotate(45deg); }
+
+  .faq-item .faq-body {
+    padding: 0 22px 20px;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+
+  /* ───────────── Workers ───────────── */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent);
+    color: #0A0A0A;
+    font-weight: 700;
+    font-size: 0.95rem;
+    padding: 14px 30px;
+    border-radius: 12px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(255, 107, 53, 0.35);
+  }
+
+  .workers-cta { text-align: center; margin-top: 40px; }
+
+  .workers-cta .hint {
+    display: block;
+    margin-top: 14px;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+
+  /* ───────────── CTA ───────────── */
+  .cta {
+    text-align: center;
+  }
+
+  .cta-box {
+    background:
+      radial-gradient(ellipse 80% 120% at 50% -20%, rgba(255,107,53,0.16), transparent 65%),
+      var(--card);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 70px 28px;
+  }
+
+  .cta-box h2 {
+    font-size: clamp(1.8rem, 5vw, 2.6rem);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin-bottom: 14px;
+  }
+
+  .cta-box p {
+    color: var(--muted);
+    max-width: 480px;
+    margin: 0 auto 34px;
+  }
+
+  /* ───────────── Footer ───────────── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 44px 0 54px;
+    position: relative;
+    z-index: 3;
+    background: var(--bg);
+  }
+
+  .footer-inner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .footer-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    font-size: 0.88rem;
+    color: var(--muted);
+  }
+
+  .footer-links a:hover, .footer-links a:focus-visible { color: var(--text); }
+
+  .footer-copy {
+    width: 100%;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: #555;
+  }
+
+  /* ───────────── Scroll reveal ───────────── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity 0.6s ease, transform 0.6s cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition-delay: var(--d, 0ms);
+  }
+
+  .reveal.in {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ───────────── Responsive ───────────── */
+  @media (max-width: 860px) {
+    .services-grid { grid-template-columns: repeat(2, 1fr); }
+    .steps-grid { grid-template-columns: repeat(2, 1fr); }
+    .showcase-grid { grid-template-columns: 1fr; gap: 40px; text-align: center; }
+    .showcase-copy .check-list { max-width: 340px; margin: 0 auto; text-align: left; }
+    .map-card { height: 320px; }
+  }
+
+  /* Collapse nav into a hamburger dropdown on narrow screens */
+  @media (max-width: 720px) {
+    .nav-toggle { display: flex; }
+
+    .nav-links {
+      position: absolute;
+      top: 64px;
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      gap: 0;
+      background: rgba(10, 10, 10, 0.97);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 0;
+      font-size: 1rem;
+      /* Hidden by default — collapsed */
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: max-height 0.3s ease, opacity 0.25s ease;
+    }
+
+    .nav-links.open {
+      max-height: 320px;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .nav-links a {
+      padding: 14px 24px;
+      width: 100%;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-links a:last-child { border-bottom: none; }
+  }
+
+  @media (max-width: 560px) {
+    .trust-grid { grid-template-columns: repeat(2, 1fr); gap: 26px 12px; }
+    .services-grid { grid-template-columns: 1fr; }
+    .steps-grid { grid-template-columns: 1fr; }
+    .section-pad { padding: 64px 0; }
+  }
+
+  /* ───────────── Reduced motion ───────────── */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .hero-bg, .hero-content { transform: none !important; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .scroll-hint { animation: none; }
+    .service-card, .service-card:hover { transform: none; transition: none; }
+    .map-dot .dot::after { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ───────────── Nav ───────────── -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="/" class="logo" aria-label="Taskly — inicio">
+      <img class="logo-mark" src="/logo-96.png" alt="" width="32" height="32">
+      Taskly
+    </a>
+    <button class="nav-toggle" id="navToggle" aria-label="Abrir menú" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="#como-funciona">Cómo funciona</a>
+      <a href="#servicios">Servicios</a>
+      <a href="#trabajadores">Trabajadores</a>
+      <a href="/contacto">Contacto</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ───────────── Hero ───────────── -->
+<header class="hero" id="hero">
+  <div class="hero-bg" id="heroBg" aria-hidden="true"></div>
+  <div class="hero-content" id="heroContent">
+    <div class="hero-eyebrow">Monterrey y área metropolitana</div>
+    <h1>El experto que tu hogar necesita, <span class="accent">a un toque de distancia</span></h1>
+    <p class="hero-sub">Conectamos tu hogar con plomeros, electricistas y técnicos verificados en tu colonia. Publica tu trabajo, compara propuestas y paga seguro — todo desde la app.</p>
+    <div class="store-chips" role="group" aria-label="Disponibilidad de la app">
+      <div class="chip" aria-disabled="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8.79-.16 2.31-.93 3.89-.79 1.32.11 2.5.62 3.3 1.63-2.99 1.79-2.51 5.72.5 6.92-.65 1.65-1.5 3.27-2.77 4.41zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+        <div class="chip-text">
+          <small>Próximamente</small>
+          <strong>App Store</strong>
+        </div>
+      </div>
+      <div class="chip" aria-disabled="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.6 1.8c-.3.3-.5.8-.5 1.4v17.6c0 .6.2 1.1.5 1.4l.1.1 9.9-9.9v-.2L3.7 1.7l-.1.1zm13.3 13.3-3.3-3.3v-.2l3.3-3.3.1.1 3.9 2.2c1.1.6 1.1 1.7 0 2.3l-3.9 2.2h-.1zm-.1.1-3.4-3.4-9.9 9.9c.4.4 1 .4 1.7 0l11.6-6.5zM3.5 1.7l9.9 9.9 3.4-3.4L5.2 1.7c-.7-.4-1.3-.4-1.7 0z"/></svg>
+        <div class="chip-text">
+          <small>Próximamente</small>
+          <strong>Google Play</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="scroll-hint" aria-hidden="true">↓</div>
+</header>
+
+<!-- ───────────── Trust bar ───────────── -->
+<section class="trust">
+  <div class="container trust-grid">
+    <div class="trust-item reveal" style="--d: 0ms">
+      <div class="big"><span class="hl">6</span> Categorías</div>
+      <div class="label">Para todo tu hogar</div>
+    </div>
+    <div class="trust-item reveal" style="--d: 90ms">
+      <div class="big"><span class="hl">100%</span> Verificados</div>
+      <div class="label">Identidad confirmada</div>
+    </div>
+    <div class="trust-item reveal" style="--d: 180ms">
+      <div class="big"><span class="hl">5★</span> Reseñas</div>
+      <div class="label">Calificaciones reales</div>
+    </div>
+    <div class="trust-item reveal" style="--d: 270ms">
+      <div class="big"><svg class="seal-icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M12.00 1.50 L14.12 4.08 L17.25 2.91 L17.80 6.20 L21.09 6.75 L19.92 9.88 L22.50 12.00 L19.92 14.12 L21.09 17.25 L17.80 17.80 L17.25 21.09 L14.12 19.92 L12.00 22.50 L9.88 19.92 L6.75 21.09 L6.20 17.80 L2.91 17.25 L4.08 14.12 L1.50 12.00 L4.08 9.88 L2.91 6.75 L6.20 6.20 L6.75 2.91 L9.88 4.08 Z"/><path d="M8.4 12 L11 14.4 L15.6 9.4" stroke-width="1.7"/></svg> <span class="hl">Garantía</span> Taskly</div>
+      <div class="label">Tu pago protegido en la plataforma</div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── App showcase ───────────── -->
+<section class="section-pad" id="app">
+  <div class="container showcase-grid">
+    <div class="showcase-copy reveal">
+      <div class="kicker">La app</div>
+      <h2>Así se ve Taskly</h2>
+      <p>Todo el proceso vive en un solo lugar: publica tu trabajo, recibe propuestas con precio, revisa perfiles y coordina por chat — sin llamadas a desconocidos.</p>
+      <ul class="check-list">
+        <li>Publica tu trabajo con fotos y tu zona</li>
+        <li>Compara propuestas, perfiles y reseñas</li>
+        <li>Chatea y agenda la visita en la app</li>
+        <li>Paga seguro cuando el trabajo esté hecho</li>
+      </ul>
+    </div>
+    <div class="phone-wrap reveal" style="--d: 120ms" aria-hidden="true">
+      <div class="phone">
+        <div class="phone-notch"></div>
+        <div class="phone-screen">
+          <div class="app-header"><img src="/logo-96.png" alt="">Taskly</div>
+          <div class="app-chips"><span class="on">Todos</span><span><ion-icon name="water-outline" style="color:#3498DB"></ion-icon> Plomería</span><span><ion-icon name="flash-outline" style="color:#F1C40F"></ion-icon> Electricidad</span></div>
+          <div class="app-card">
+            <div class="app-card-top"><span class="app-cat"><ion-icon name="water-outline" style="color:#3498DB"></ion-icon> Plomería</span><span class="app-urgent">URGENTE</span></div>
+            <div class="app-title">Fuga de agua en la cocina</div>
+            <div class="app-meta"><ion-icon name="location-outline"></ion-icon> Monterrey Centro</div>
+            <div class="app-row"><span class="app-price">$450 MXN</span><span class="app-bids">3 propuestas</span></div>
+          </div>
+          <div class="app-card">
+            <div class="app-card-top"><span class="app-cat"><ion-icon name="flash-outline" style="color:#F1C40F"></ion-icon> Electricidad</span></div>
+            <div class="app-title">Instalar 4 contactos nuevos</div>
+            <div class="app-meta"><ion-icon name="location-outline"></ion-icon> San Pedro</div>
+            <div class="app-row"><span class="app-price">$600 MXN</span><span class="app-bids">5 propuestas</span></div>
+          </div>
+          <div class="app-card">
+            <div class="app-card-top"><span class="app-cat"><ion-icon name="snow-outline" style="color:#1ABC9C"></ion-icon> Aire acondicionado</span></div>
+            <div class="app-title">Mantenimiento de minisplit</div>
+            <div class="app-meta"><ion-icon name="location-outline"></ion-icon> Santa Catarina</div>
+            <div class="app-row"><span class="app-price">$800 MXN</span><span class="app-bids">2 propuestas</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Services ───────────── -->
+<section class="section-pad" id="servicios" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">Servicios</div>
+      <h2>Expertos para cada rincón de tu casa</h2>
+      <p>Seis categorías de servicio con trabajadores verificados en Monterrey, San Pedro, Guadalupe, Santa Catarina, Escobedo y San Nicolás.</p>
+    </div>
+    <div class="services-grid">
+      <div class="service-card reveal" style="--d: 0ms">
+        <div class="service-icon" style="--ic: #3498DB"><ion-icon name="water-outline"></ion-icon></div>
+        <h3>Plomería</h3>
+        <p>Fugas, tinacos, calentadores, drenajes y destapes. Atiende emergencias antes de que se conviertan en goteras.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 80ms">
+        <div class="service-icon" style="--ic: #F1C40F"><ion-icon name="flash-outline"></ion-icon></div>
+        <h3>Electricidad</h3>
+        <p>Cortos, contactos, lámparas, centros de carga e instalaciones nuevas, con seguridad ante todo.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 160ms">
+        <div class="service-icon" style="--ic: #9B59B6"><ion-icon name="home-outline"></ion-icon></div>
+        <h3>Limpieza</h3>
+        <p>Limpieza profunda de casas y departamentos, post-mudanza o mantenimiento semanal de confianza.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 240ms">
+        <div class="service-icon" style="--ic: #95A5A6"><ion-icon name="hammer-outline"></ion-icon></div>
+        <h3>Carpintería</h3>
+        <p>Muebles a la medida, puertas, closets y reparaciones. Trabajo fino para tu espacio.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 320ms">
+        <div class="service-icon" style="--ic: #E74C3C"><ion-icon name="color-palette-outline"></ion-icon></div>
+        <h3>Pintura</h3>
+        <p>Interiores y exteriores con acabado profesional. Renueva tu casa sin manchar nada más que la pared.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 400ms">
+        <div class="service-icon" style="--ic: #1ABC9C"><ion-icon name="snow-outline"></ion-icon></div>
+        <h3>Aire acondicionado</h3>
+        <p>Instalación, mantenimiento y recarga de gas. Porque en Monterrey, el clima no es opcional.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── How it works ───────────── -->
+<section class="section-pad" id="como-funciona" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">Cómo funciona</div>
+      <h2>Del problema a la solución en 4 pasos</h2>
+      <p>Sin llamadas a desconocidos ni precios a ciegas. Todo el proceso, dentro de la app.</p>
+    </div>
+    <div class="steps-grid">
+      <div class="step reveal" style="--d: 0ms">
+        <div class="step-num">1</div>
+        <h3>Publica</h3>
+        <p>Describe lo que necesitas, agrega fotos y tu zona. Toma menos de un minuto.</p>
+      </div>
+      <div class="step reveal" style="--d: 90ms">
+        <div class="step-num">2</div>
+        <h3>Recibe propuestas</h3>
+        <p>Trabajadores verificados cerca de ti te envían su precio y disponibilidad.</p>
+      </div>
+      <div class="step reveal" style="--d: 180ms">
+        <div class="step-num">3</div>
+        <h3>Elige y coordina</h3>
+        <p>Compara perfiles, reseñas y precios. Acuerda los detalles por el chat de la app.</p>
+      </div>
+      <div class="step reveal" style="--d: 270ms">
+        <div class="step-num">4</div>
+        <h3>Paga seguro</h3>
+        <p>Tu pago queda protegido en la plataforma y se libera cuando el trabajo está terminado.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Pricing ───────────── -->
+<section class="section-pad" id="precios" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">Precios claros</div>
+      <h2>Sin costos ocultos</h2>
+      <p>El precio lo acuerdas tú con el trabajador. Las comisiones las ves desglosadas antes de confirmar cualquier pago.</p>
+    </div>
+    <div class="services-grid">
+      <div class="service-card reveal" style="--d: 0ms">
+        <div class="service-icon"><ion-icon name="cash-outline"></ion-icon></div>
+        <h3>Publicar es gratis</h3>
+        <p>Publica tu trabajo y recibe propuestas sin pagar nada. Solo pagas el precio que acuerdes con el trabajador que elijas.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 80ms">
+        <div class="service-icon"><ion-icon name="card-outline"></ion-icon></div>
+        <h3>Comisiones transparentes</h3>
+        <p>Pagando con tarjeta se agrega 2.5% de servicio + el procesamiento del pago (3.6% + $3 MXN). Pagando en efectivo, no hay comisión.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 160ms">
+        <div class="service-icon" style="--ic: #F1C40F"><ion-icon name="flash-outline"></ion-icon></div>
+        <h3>Urgente, solo si lo necesitas</h3>
+        <p>Por $25 MXN extra tu trabajo aparece destacado para recibir propuestas más rápido. Completamente opcional.</p>
+      </div>
+    </div>
+    <p class="pricing-note reveal">El trabajador recibe el precio acordado completo — las comisiones nunca salen de su bolsillo.</p>
+  </div>
+</section>
+
+<!-- ───────────── Workers ───────────── -->
+<section class="section-pad" id="trabajadores" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">¿Eres trabajador?</div>
+      <h2>Gana dinero con tus habilidades</h2>
+      <p>Plomero, electricista, carpintero o técnico: Taskly te conecta con clientes en tu zona, sin pagar por publicidad ni perseguir cobros.</p>
+    </div>
+    <div class="services-grid">
+      <div class="service-card reveal" style="--d: 0ms">
+        <div class="service-icon"><ion-icon name="wallet-outline"></ion-icon></div>
+        <h3>Tú pones el precio</h3>
+        <p>Revisa los trabajos publicados cerca de ti y envía tu propuesta con el precio que tú decides.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 80ms">
+        <div class="service-icon" style="--ic: #2ECC71"><ion-icon name="shield-checkmark-outline"></ion-icon></div>
+        <h3>Pagos protegidos</h3>
+        <p>El cliente paga por la plataforma y el dinero llega directo a tu cuenta bancaria. Sin perseguir pagos.</p>
+      </div>
+      <div class="service-card reveal" style="--d: 160ms">
+        <div class="service-icon" style="--ic: #F1C40F"><ion-icon name="star-outline"></ion-icon></div>
+        <h3>Construye tu reputación</h3>
+        <p>Cada trabajo bien hecho suma reseñas reales a tu perfil — y más reseñas significan más clientes.</p>
+      </div>
+    </div>
+    <div class="workers-cta reveal">
+      <a class="btn-primary" href="mailto:soporte@taskly.com.mx?subject=Quiero%20ser%20trabajador%20en%20Taskly">Quiero registrarme como trabajador</a>
+      <span class="hint">Escríbenos y te avisamos en cuanto abra el registro de trabajadores.</span>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Coverage ───────────── -->
+<section class="section-pad" id="cobertura" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">Cobertura</div>
+      <h2>Monterrey y su área metropolitana</h2>
+      <p>Empezamos donde conocemos cada colonia. ¿Tu ciudad no aparece? <a href="/contacto" style="color: var(--accent);">Escríbenos</a> — nos ayuda a decidir a dónde llegar después.</p>
+    </div>
+    <div class="map-card reveal" aria-label="Mapa de cobertura: Monterrey, San Pedro, Guadalupe, Santa Catarina, Escobedo y San Nicolás">
+      <div class="map-dot" style="left: 65%; top: 16%;"><span class="dot"></span><span class="dot-label">Escobedo</span></div>
+      <div class="map-dot" style="left: 75%; top: 35%;"><span class="dot"></span><span class="dot-label">San Nicolás</span></div>
+      <div class="map-dot" style="left: 66%; top: 58%;"><span class="dot"></span><span class="dot-label">Monterrey</span></div>
+      <div class="map-dot" style="left: 85%; top: 64%;"><span class="dot"></span><span class="dot-label">Guadalupe</span></div>
+      <div class="map-dot" style="left: 15%; top: 64%;"><span class="dot"></span><span class="dot-label">Santa Catarina</span></div>
+      <div class="map-dot" style="left: 33%; top: 80%;"><span class="dot"></span><span class="dot-label">San Pedro</span></div>
+      <div id="coverage-map"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── FAQ ───────────── -->
+<section class="section-pad" id="faq" style="padding-top: 0;">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="kicker">Preguntas frecuentes</div>
+      <h2>Resolvemos tus dudas</h2>
+    </div>
+    <div class="faq-list reveal">
+      <details class="faq-item">
+        <summary>¿Cuánto cuesta usar Taskly?</summary>
+        <div class="faq-body">Publicar un trabajo es gratis y tú acuerdas el precio directamente con el trabajador. Si pagas con tarjeta se agrega una comisión de servicio del 2.5% más el procesamiento del pago (3.6% + $3 MXN), desglosados antes de confirmar. El pago en efectivo no tiene comisión.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿Cómo verifican a los trabajadores?</summary>
+        <div class="faq-body">Cada trabajador debe enviar su identificación oficial (INE), que el equipo de Taskly revisa antes de otorgarle el distintivo de Verificado. Además, su perfil muestra calificaciones y reseñas reales de otros clientes.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿Cómo se protege mi pago?</summary>
+        <div class="faq-body">Al pagar con tarjeta, tu dinero queda protegido en la plataforma y se libera al trabajador únicamente cuando ambas partes confirman que el trabajo fue completado satisfactoriamente.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿Qué pasa si algo sale mal con un trabajo?</summary>
+        <div class="faq-body">Puedes abrir una disputa dentro de la app durante las 72 horas siguientes a que el trabajo se marque como completado. El equipo de Taskly revisa cada caso y emite una resolución en un máximo de 5 días hábiles.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿En qué ciudades está disponible Taskly?</summary>
+        <div class="faq-body">Taskly opera en Monterrey y su área metropolitana: Monterrey, San Pedro Garza García, Guadalupe, Santa Catarina, Escobedo y San Nicolás de los Garza.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿Cómo me registro como trabajador?</summary>
+        <div class="faq-body">Escríbenos a <a href="mailto:soporte@taskly.com.mx?subject=Quiero%20ser%20trabajador%20en%20Taskly" style="color: var(--accent);">soporte@taskly.com.mx</a> con el asunto "Quiero ser trabajador", cuéntanos tu oficio y tu zona, y te avisamos en cuanto abra el registro de trabajadores en la app.</div>
+      </details>
+      <details class="faq-item">
+        <summary>¿Cuándo estará disponible la app?</summary>
+        <div class="faq-body">Muy pronto. Taskly llegará primero a Monterrey y su área metropolitana, disponible en App Store y Google Play.</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── CTA ───────────── -->
+<section class="section-pad cta" style="padding-top: 0;">
+  <div class="container">
+    <div class="cta-box reveal">
+      <h2>¿Listo para empezar?</h2>
+      <p>Muy pronto en tu celular. Taskly llega primero a Monterrey y su área metropolitana.</p>
+      <div class="store-chips" role="group" aria-label="Disponibilidad de la app">
+        <div class="chip" aria-disabled="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8.79-.16 2.31-.93 3.89-.79 1.32.11 2.5.62 3.3 1.63-2.99 1.79-2.51 5.72.5 6.92-.65 1.65-1.5 3.27-2.77 4.41zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+          <div class="chip-text">
+            <small>Próximamente</small>
+            <strong>App Store</strong>
+          </div>
+        </div>
+        <div class="chip" aria-disabled="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.6 1.8c-.3.3-.5.8-.5 1.4v17.6c0 .6.2 1.1.5 1.4l.1.1 9.9-9.9v-.2L3.7 1.7l-.1.1zm13.3 13.3-3.3-3.3v-.2l3.3-3.3.1.1 3.9 2.2c1.1.6 1.1 1.7 0 2.3l-3.9 2.2h-.1zm-.1.1-3.4-3.4-9.9 9.9c.4.4 1 .4 1.7 0l11.6-6.5zM3.5 1.7l9.9 9.9 3.4-3.4L5.2 1.7c-.7-.4-1.3-.4-1.7 0z"/></svg>
+          <div class="chip-text">
+            <small>Próximamente</small>
+            <strong>Google Play</strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────── Footer ───────────── -->
+<footer>
+  <div class="container footer-inner">
+    <a href="/" class="logo" aria-label="Taskly — inicio">
+      <img class="logo-mark" src="/logo-96.png" alt="" width="32" height="32">
+      Taskly
+    </a>
+    <div class="footer-links">
+      <a href="/contacto">Contacto</a>
+      <a href="/privacidad">Aviso de Privacidad</a>
+      <a href="/terminos">Términos y Condiciones</a>
+      <a href="mailto:soporte@taskly.com.mx">soporte@taskly.com.mx</a>
+    </div>
+    <div class="footer-copy">© 2026 Taskly. Todos los derechos reservados. Hecho en Monterrey, Nuevo León, México.</div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ───────────── Mobile nav (hamburger) ───────────── */
+  var navToggle = document.getElementById("navToggle");
+  var navLinks = document.getElementById("navLinks");
+  if (navToggle && navLinks) {
+    var closeMenu = function () {
+      navLinks.classList.remove("open");
+      navToggle.setAttribute("aria-expanded", "false");
+      navToggle.setAttribute("aria-label", "Abrir menú");
+    };
+    navToggle.addEventListener("click", function () {
+      var isOpen = navLinks.classList.toggle("open");
+      navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      navToggle.setAttribute("aria-label", isOpen ? "Cerrar menú" : "Abrir menú");
+    });
+    // Close after tapping any link
+    navLinks.querySelectorAll("a").forEach(function (a) {
+      a.addEventListener("click", closeMenu);
+    });
+    // Close when tapping outside the nav
+    document.addEventListener("click", function (e) {
+      if (navLinks.classList.contains("open") && !e.target.closest(".nav")) closeMenu();
+    });
+  }
+
+  /* ───────────── Hero parallax ─────────────
+     Content drifts at 0.45× scroll speed (appears to float up slower
+     than the page), background gradient at 0.25× (deepest layer).
+     Driven by a single rAF-throttled scroll listener. */
+  var heroContent = document.getElementById("heroContent");
+  var heroBg = document.getElementById("heroBg");
+  var hero = document.getElementById("hero");
+  var ticking = false;
+
+  function applyParallax() {
+    ticking = false;
+    var y = window.scrollY || window.pageYOffset;
+    var heroH = hero.offsetHeight;
+
+    // Only compute while the hero is in (or near) view
+    if (y <= heroH) {
+      // Content moves up at 45% of scroll speed — net effect: it lags
+      // behind the scroll, appearing to float. Also fades gently.
+      heroContent.style.transform = "translate3d(0," + (y * 0.45) + "px,0)";
+      heroContent.style.opacity = Math.max(0, 1 - (y / heroH) * 1.15);
+
+      // Background layer: slowest movement = deepest perceived layer
+      heroBg.style.transform = "translate3d(0," + (y * 0.25) + "px,0)";
+    }
+  }
+
+  function onScroll() {
+    if (!ticking) {
+      ticking = true;
+      window.requestAnimationFrame(applyParallax);
+    }
+  }
+
+  if (!reduceMotion) {
+    window.addEventListener("scroll", onScroll, { passive: true });
+    applyParallax(); // initial position (e.g. page restored mid-scroll)
+  }
+
+  /* ───────────── Scroll-reveal (IntersectionObserver) ───────────── */
+  var revealEls = document.querySelectorAll(".reveal");
+
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    revealEls.forEach(function (el) { el.classList.add("in"); });
+  } else {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("in");
+          io.unobserve(entry.target); // reveal once
+        }
+      });
+    }, { threshold: 0.15, rootMargin: "0px 0px -40px 0px" });
+
+    revealEls.forEach(function (el) { io.observe(el); });
+  }
+
+  /* ───────────── Coverage map (Leaflet + CARTO dark tiles) ─────────────
+     Loads with `defer`; if the CDN is unreachable the static fallback
+     dots underneath stay visible instead. */
+  window.addEventListener("DOMContentLoaded", function () {
+    if (!window.L || !document.getElementById("coverage-map")) return;
+
+    // Same six areas as MONTERREY_LOCATIONS in the app
+    var areas = [
+      ["Monterrey",      25.6866, -100.3161],
+      ["San Pedro",      25.6488, -100.4094],
+      ["San Nicolás",    25.7419, -100.2894],
+      ["Santa Catarina", 25.6744, -100.4625],
+      ["Guadalupe",      25.6767, -100.2597],
+      ["Escobedo",       25.7833, -100.3167]
+    ];
+
+    var map = L.map("coverage-map", {
+      scrollWheelZoom: false,
+      dragging: !L.Browser.mobile,
+      tap: false
+    });
+
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      subdomains: "abcd",
+      maxZoom: 19
+    }).addTo(map);
+
+    var bounds = [];
+    areas.forEach(function (a) {
+      L.circleMarker([a[1], a[2]], {
+        radius: 8,
+        color: "#FF6B35",
+        weight: 2,
+        fillColor: "#FF6B35",
+        fillOpacity: 0.45
+      }).addTo(map).bindTooltip(a[0], {
+        permanent: true,
+        direction: "bottom",
+        offset: [0, 10],
+        className: "map-tip"
+      });
+      bounds.push([a[1], a[2]]);
+    });
+
+    map.fitBounds(bounds, { padding: [45, 45] });
+  });
+})();
+</script>
+</body>
+</html>

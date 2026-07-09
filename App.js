@@ -47,30 +47,53 @@ import {
   Appearance,
   Animated,
   PanResponder,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { FontAwesome5 } from '@expo/vector-icons';
-import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
+// expo-notifications: remote push was removed from Expo Go on Android (SDK 53+), and
+// merely importing the module there logs a startup console error. Skip it in that
+// case — every call site checks `Notifications` for null. Dev/production builds and
+// iOS Expo Go load it normally.
+const isExpoGo = Constants.appOwnership === 'expo';
+const Notifications = isExpoGo && Platform.OS === 'android' ? null : require('expo-notifications');
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as Location from 'expo-location';
+import * as Haptics from 'expo-haptics';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Google from 'expo-auth-session/providers/google';
+import Svg, { Path } from 'react-native-svg';
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as StoreReview from 'expo-store-review';
+import * as Sentry from '@sentry/react-native';
+
+// 🔥 Crash reporting — create a free project at sentry.io, then paste the DSN here
+// (Project Settings → Client Keys). Leave empty to disable.
+const SENTRY_DSN = '';
+if (SENTRY_DSN) {
+  Sentry.init({ dsn: SENTRY_DSN, sendDefaultPii: false });
+}
 
 WebBrowser.maybeCompleteAuthSession();
 
 // Show alerts/sounds even when app is foregrounded
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
+}
 
 import { initializeApp } from 'firebase/app';
 import {
@@ -193,8 +216,132 @@ const MONTERREY_LOCATIONS = [
 
 const URGENT_JOB_PRICE = 25; // MXN
 const fmtMXN = (n) => Number(n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtInt = (n) => Number(n || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 });
+// Worker estimate: "$1,000" for a single number, "$800–$1,500" for a range (commas, no decimals).
+const fmtEstimate = (estMin, estMax) => {
+  const lo = Number(estMin || 0);
+  const hi = estMax != null && estMax !== '' ? Number(estMax) : null;
+  if (hi != null && hi !== lo) return `$${fmtInt(lo)}–$${fmtInt(hi)}`;
+  return `$${fmtInt(lo)}`;
+};
+// A card job where both sides confirmed completion (or payment was requested) but the
+// client hasn't paid yet — i.e. the client still owes a payment.
+const isPaymentPending = (job) =>
+  job?.status === 'assigned' && job?.paymentMethod === 'card' &&
+  ((job.clientConfirmed && job.workerConfirmed) || job.paymentRequested);
+
+// Short price label for a job card / detail when there is no client budget anymore.
+const jobPriceLabel = (job) => {
+  if (job?.assignedPrice) return `$${fmtMXN(job.assignedPrice)}`;
+  if (job?.budgetMin != null && job?.budgetMax != null) return `$${fmtInt(job.budgetMin)}-$${fmtInt(job.budgetMax)}`; // legacy
+  return 'Por cotizar';
+};
+// Renders a MXN price ($1,000.00) with the cents in a slightly smaller font for cleaner display.
+const PriceText = ({ value, style }) => {
+  const [intPart, decPart] = fmtMXN(value).split('.');
+  const baseSize = (StyleSheet.flatten(style) || {}).fontSize || 15;
+  return (
+    <Text style={style}>${intPart}<Text style={{ fontSize: Math.round(baseSize * 0.72) }}>.{decPart}</Text></Text>
+  );
+};
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+// Compact relative timestamp for notification rows (e.g. "ahora", "5 min", "3 h", "2 d", "9 jun").
+const relTime = (timestamp) => {
+  if (!timestamp?.toDate) return '';
+  try {
+    const posted = timestamp.toDate();
+    const diffMin = Math.floor((Date.now() - posted) / 60000);
+    if (diffMin < 1) return 'ahora';
+    if (diffMin < 60) return `${diffMin} min`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH} h`;
+    const diffD = Math.floor(diffH / 24);
+    if (diffD < 7) return `${diffD} d`;
+    return posted.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
+  } catch { return ''; }
+};
+
+// Per-type icon, accent color and short bold title (iOS Mail-style heading).
+const NOTIF_META = {
+  new_bid:           { icon: 'chatbubble-ellipses-outline', color: COLORS.blue,   title: 'Nuevo estimado' },
+  quote_received:    { icon: 'pricetag-outline',           color: COLORS.accent, title: 'Cotización recibida' },
+  quote_accepted:    { icon: 'checkmark-circle-outline',    color: COLORS.green,  title: 'Cotización aceptada' },
+  price_change_accepted: { icon: 'cash-outline',           color: COLORS.green,  title: 'Nuevo precio acordado' },
+  bid_accepted:      { icon: 'checkmark-circle-outline',    color: COLORS.green,  title: 'Propuesta aceptada' },
+  bid_declined:      { icon: 'close-circle-outline',        color: COLORS.muted,  title: 'Propuesta no elegida' },
+  job_completed:     { icon: 'checkmark-done-outline',      color: COLORS.green,  title: 'Trabajo completado' },
+  payment_confirmed: { icon: 'card-outline',               color: COLORS.green,  title: 'Pago confirmado' },
+  payment_received:  { icon: 'cash-outline',               color: COLORS.green,  title: 'Pago recibido' },
+  payment_requested: { icon: 'card-outline',               color: COLORS.accent, title: 'Pago pendiente' },
+  location_shared:   { icon: 'location-outline',           color: COLORS.accent, title: 'Ubicación compartida' },
+  review_received:   { icon: 'star-outline',               color: COLORS.yellow, title: 'Nueva reseña' },
+  schedule_proposed: { icon: 'calendar-outline',           color: COLORS.blue,   title: 'Visita propuesta' },
+  schedule_agreed:   { icon: 'calendar-outline',           color: COLORS.green,  title: 'Visita confirmada' },
+  direct_proposal:   { icon: 'paper-plane-outline',        color: COLORS.purple, title: 'Trabajo directo' },
+  worker_rejected:   { icon: 'alert-circle-outline',       color: COLORS.red,    title: 'Trabajo liberado' },
+  job_invite:        { icon: 'paper-plane-outline',        color: COLORS.purple, title: 'Invitación' },
+  account_verified:  { icon: 'shield-checkmark-outline',   color: COLORS.green,  title: 'Cuenta verificada' },
+  account_rejected:  { icon: 'shield-outline',             color: COLORS.red,    title: 'Verificación rechazada' },
+  business_approved: { icon: 'business-outline',           color: COLORS.green,  title: 'Empresa aprobada' },
+  business_rejected: { icon: 'business-outline',           color: COLORS.red,    title: 'Empresa rechazada' },
+  worker_on_way:     { icon: 'car-outline',                color: COLORS.blue,   title: 'En camino' },
+  worker_arrived:    { icon: 'location-outline',           color: COLORS.accent, title: 'Trabajador llegó' },
+  recurring_created: { icon: 'repeat-outline',             color: COLORS.blue,   title: 'Servicio programado' },
+};
+const getNotifMeta = (type) => NOTIF_META[type] || { icon: 'notifications-outline', color: COLORS.muted, title: 'Notificación' };
+
+// Preview line shown under the title — concise, no leading emoji (the icon conveys the category).
+const notifBody = (type, a, e = {}) => {
+  const job = e.jobTitle || '';
+  const amt = e.amount ? fmtMXN(e.amount) : '';
+  switch (type) {
+    case 'new_bid':           return `${a} estimó ${e.estimate || ''} en "${job}"`;
+    case 'quote_received':    return `${a} te envió una cotización de $${amt} MXN en "${job}". Toca para revisarla.`;
+    case 'quote_accepted':    return `${a} aceptó tu cotización de $${amt} MXN en "${job}".`;
+    case 'price_change_accepted': return `Nuevo precio acordado en "${job}": $${amt} MXN.`;
+    case 'bid_accepted':      return `${a} te asignó "${job}"`;
+    case 'bid_declined':      return `${a} eligió a otro trabajador para "${job}"`;
+    case 'job_completed':     return `${a} marcó "${job}" como completado. Toca para ver la reseña.`;
+    case 'payment_confirmed': return `Pagaste $${amt} MXN en "${job}". ¡Gracias por usar Taskly!`;
+    case 'payment_received':  return `Recibiste $${amt} MXN en "${job}". Llega en 1-2 días hábiles.`;
+    case 'payment_requested': return `${a || 'El trabajador'} confirmó "${job}". Toca para pagar $${amt} MXN.`;
+    case 'location_shared':   return `${a} compartió la ubicación de "${job}". Toca para ver el mapa.`;
+    case 'review_received':   return `${a} te dejó ${e.rating || ''} estrellas: "${e.review || 'Sin comentario'}"`;
+    case 'schedule_proposed': return `${a} propuso visita el ${e.date || ''} a las ${e.time || ''} en "${job}"`;
+    case 'schedule_agreed':   return `${a} aceptó la visita el ${e.date || ''} a las ${e.time || ''}`;
+    case 'direct_proposal':   return `${a} te propuso un trabajo directo: "${job}"`;
+    case 'worker_rejected':   return `${a} no pudo atender "${job}". Puedes reasignarlo.`;
+    case 'job_invite':        return `${a} te invitó a proponer en "${job}"`;
+    case 'account_verified':  return 'Ahora apareces con el sello de cuenta verificada.';
+    case 'account_rejected':  return 'No fue aprobada. Intenta con fotos más claras de tu INE.';
+    case 'business_approved': return `"${job}" ya aparece en el directorio de empresas.`;
+    case 'business_rejected': return `"${job}" no fue aprobada. Revisa que el comprobante sea legible.`;
+    case 'worker_on_way':     return `${a} va en camino a "${job}".`;
+    case 'worker_arrived':    return `${a} llegó al domicilio de "${job}".`;
+    case 'recurring_created': return `Tu siguiente "${job}" se programó para el ${e.date || ''}. Toca para verlo.`;
+    default:                  return `Tienes una nueva notificación de ${a}`;
+  }
+};
+
+// Legacy rows stored only a single `message` with a leading emoji — strip it for the preview.
+const stripLeadingEmoji = (s = '') => s.replace(/^[💬✅❌✓✔️💳💰📍⭐📅📩❗🏢🚗🔁]️?\s*/u, '');
 const TASKLY_FEE_PCT = 0.025; // 2.5% platform cut via Stripe Connect application_fee_amount
 const BACKEND_URL = "https://taskly-backend-production-20bc.up.railway.app";
+
+// Every backend call goes through this so it carries the caller's Firebase ID token.
+// The backend verifies the token (admin.auth().verifyIdToken) before acting on protected routes.
+const authedFetch = async (url, options = {}) => {
+  let token = null;
+  try { token = await auth.currentUser?.getIdToken(); } catch {}
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+};
 
 // Mexican bank codes — first 3 digits of CLABE
 const CLABE_BANKS = {
@@ -242,28 +389,12 @@ const GOOGLE_CONFIGURED = !GOOGLE_WEB_CLIENT_ID.startsWith('YOUR_');
 // Helper Functions
 // ✅ SPECIFIC notification messages with person name
 const createNotification = async (userId, type, actorName = '', extra = {}) => {
-  const messages = {
-    new_bid:          `💬 ${actorName} envió una propuesta de $${extra.price || ''} en "${extra.jobTitle || ''}"`,
-    bid_accepted:     `✅ ¡Tu propuesta fue aceptada! ${actorName} te asignó "${extra.jobTitle || ''}"`,
-    bid_declined:     `❌ ${actorName} no seleccionó tu propuesta para "${extra.jobTitle || ''}"`,
-    job_completed:    `✓ ${actorName} marcó como completado "${extra.jobTitle || ''}". Toca aquí para ver la reseña.`,
-    payment_confirmed: `💳 Pago confirmado por $${extra.amount || ''} MXN en "${extra.jobTitle || ''}". ¡Gracias por usar Taskly!`,
-    payment_received:  `💰 Pago recibido por $${extra.amount || ''} MXN en "${extra.jobTitle || ''}". El dinero llegará en 1-2 días hábiles.`,
-    payment_requested: `💳 El trabajador confirmó "${extra.jobTitle || ''}". Toca aquí para completar el pago de $${extra.amount || ''} MXN.`,
-    location_shared:  `📍 ${actorName} compartió la ubicación exacta de "${extra.jobTitle || ''}". Toca para verla en el mapa.`,
-    review_received:  `⭐ ${actorName} te dejó ${extra.rating || ''} estrellas: "${extra.review || 'Sin comentario'}"`,
-    schedule_proposed:`📅 ${actorName} propuso visita el ${extra.date || ''} a las ${extra.time || ''} para "${extra.jobTitle || ''}"`,
-    schedule_agreed:  `📅 ¡Confirmado! ${actorName} aceptó visita el ${extra.date || ''} a las ${extra.time || ''}`,
-    direct_proposal:   `📩 ${actorName} te propuso un trabajo directo: "${extra.jobTitle || ''}"`,
-    worker_rejected:   `❗ ${actorName} no pudo atender "${extra.jobTitle || ''}". Puedes reasignar el trabajo.`,
-    job_invite:        `📩 ${actorName} te invitó a proponer en "${extra.jobTitle || ''}"`,
-    account_verified:  `✅ ¡Tu identidad fue verificada! Ahora apareces con el sello de cuenta verificada.`,
-    account_rejected:  `❌ Tu solicitud de verificación no fue aprobada. Intenta de nuevo con fotos más claras de tu INE.`,
-  };
-  const message = messages[type] || `Notificación de ${actorName}`;
+  const title = getNotifMeta(type).title;
+  const body = notifBody(type, actorName, extra);
   try {
     await addDoc(collection(db, 'notifications'), {
-      userId, type, message,
+      userId, type, title, body,
+      message: body, // kept for backward compatibility with older readers
       jobId: extra.jobId || null,
       read: false,
       createdAt: serverTimestamp(),
@@ -278,8 +409,8 @@ const createNotification = async (userId, type, actorName = '', extra = {}) => {
         headers: { 'Content-Type': 'application/json', 'Accept-Encoding': 'gzip, deflate' },
         body: JSON.stringify({
           to: pushToken,
-          title: 'Taskly',
-          body: message,
+          title: `Taskly · ${title}`,
+          body,
           data: { jobId: extra.jobId || null, type },
           sound: 'default',
           priority: 'high',
@@ -358,8 +489,58 @@ const uploadImage = async (imageUri, path, contentType = 'image/jpeg') => {
   }
 };
 
+// 🧹 30 days after a job is completed (payment sent) or cancelled, the job listing,
+// its chats and all media (job photos + photos/videos shared in chat) are auto-deleted.
+const JOB_DELETE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Called at completion/cancellation: schedule the job + its chats for deletion in 30 days
+// (kept until then so both parties can still reference the conversation and media).
+const cleanupCompletedJobMedia = async (job) => {
+  try {
+    const when = Date.now() + JOB_DELETE_GRACE_MS;
+    await updateDoc(doc(db, 'jobs', job.id), { deleteAtMs: when }).catch(() => {});
+    const chatsSnap = await getDocs(query(collection(db, 'chats'), where('jobId', '==', job.id)));
+    await Promise.all(chatsSnap.docs.map(c =>
+      updateDoc(c.ref, { deleteAtMs: when }).catch(() => {})
+    ));
+  } catch (e) {
+    console.warn('Job deletion scheduling failed:', e);
+  }
+};
+
+// Deletes a chat, its messages, and any media those messages hold in Storage
+const purgeChat = async (chatId) => {
+  try {
+    const msgsSnap = await getDocs(query(collection(db, 'messages'), where('chatId', '==', chatId)));
+    // Remove media shared in the chat first
+    await Promise.all(msgsSnap.docs.map(m => {
+      const p = m.data().mediaPath;
+      return p ? deleteObject(ref(storage, p)).catch(() => {}) : Promise.resolve();
+    }));
+    await Promise.all(msgsSnap.docs.map(m => deleteDoc(m.ref).catch(() => {})));
+    await deleteDoc(doc(db, 'chats', chatId)).catch(() => {});
+  } catch {}
+};
+
+// Deletes a job once its 30-day timer passes: job media, its chats (+ chat media), then the doc.
+// Only the job owner (or admin) can delete the job per Firestore rules, so this is called
+// from the client's own job listener.
+const purgeJob = async (job) => {
+  try {
+    const urls = [
+      ...(job.images || []).map(m => m.url).filter(Boolean),
+      ...(job.imageUrl ? [job.imageUrl] : []),
+    ];
+    await Promise.all(urls.map(u => deleteObject(ref(storage, u)).catch(() => {})));
+    const chatsSnap = await getDocs(query(collection(db, 'chats'), where('jobId', '==', job.id)));
+    await Promise.all(chatsSnap.docs.map(c => purgeChat(c.id)));
+    await deleteDoc(doc(db, 'jobs', job.id)).catch(() => {});
+  } catch {}
+};
+
 // 🔔 Push Notifications Setup
 const setupPushNotifications = async (userId) => {
+  if (!Notifications) return; // Expo Go on Android — push unavailable
   try {
     // Android needs a channel before any notification can appear
     if (Platform.OS === 'android') {
@@ -889,7 +1070,7 @@ function JobMediaPicker({ items, onChange }) {
           </View>
         ))}
         {items.length < MAX_ITEMS && (
-          <TouchableOpacity style={styles.mediaAddBtn} onPress={addMedia}>
+          <TouchableOpacity style={[styles.mediaAddBtn, { backgroundColor: C.card, borderColor: COLORS.accent + '66' }]} onPress={addMedia}>
             <Text style={styles.mediaAddIcon}>＋</Text>
             <Text style={styles.mediaAddText}>{items.length === 0 ? 'Agregar\nfoto/video' : 'Agregar\nmás'}</Text>
           </TouchableOpacity>
@@ -940,7 +1121,7 @@ function ImagePickerButton({ onImageSelected, currentImage, label = "Agregar fot
 }
 
 // Job Card (same as before, with image support)
-function JobCard({ job, onPress, showMenu = false, onEdit, onDelete, showCreator = false, onChat, showClientRating = false }) {
+function JobCard({ job, onPress, showMenu = false, onEdit, onDelete, showCreator = false, onChat, showClientRating = false, onLongPress }) {
   const C = useTheme();
   const timeAgo = (timestamp) => {
     if (!timestamp) return 'hace un momento';
@@ -961,7 +1142,12 @@ function JobCard({ job, onPress, showMenu = false, onEdit, onDelete, showCreator
   };
 
   return (
-    <TouchableOpacity onPress={() => onPress(job)} style={[styles.jobCard, { backgroundColor: C.card, borderColor: C.border }]}>
+    <TouchableOpacity
+      onPress={() => onPress(job)}
+      onLongPress={onLongPress ? () => onLongPress(job) : undefined}
+      delayLongPress={300}
+      style={[styles.jobCard, { backgroundColor: C.card, borderColor: C.border }]}
+    >
       {job.isUrgent && (
         <View style={styles.urgentBadge}>
           <Text style={styles.urgentText}>🔥 URGENTE</Text>
@@ -1003,7 +1189,9 @@ function JobCard({ job, onPress, showMenu = false, onEdit, onDelete, showCreator
       <Text style={[styles.jobDescription, { color: C.muted }]} numberOfLines={2}>{job.description}</Text>
 
       <View style={styles.jobFooter}>
-        <Text style={styles.jobBudget}>${job.budgetMin}-${job.budgetMax}</Text>
+        {job.assignedPrice
+          ? <PriceText value={job.assignedPrice} style={styles.jobBudget} />
+          : <Text style={styles.jobBudget}>{jobPriceLabel(job)}</Text>}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           {/* Payment method pill */}
           <View style={{
@@ -1138,12 +1326,422 @@ function WorkerCard({ worker, onPress, showReviews = false, isFavorite = false, 
 }
 
 // Chat Screen (with location display and schedule feature)
+// Chats tab — list of all conversations for the current user
+function ChatsTab({ user, onOpenChat }) {
+  const C = useTheme();
+  const [chats, setChats] = useState(null); // null = loading
+  const [chatSearch, setChatSearch] = useState('');
+  const [chatFilter, setChatFilter] = useState('all'); // all | active | completed
+  const [collapsed, setCollapsed] = useState({}); // jobId -> true when folder is collapsed
+
+  useEffect(() => {
+    const q = query(collection(db, 'chats'), where('participants', 'array-contains', user.id));
+    return onSnapshot(q, async (snap) => {
+      // Purge chats whose deletion timer expired
+      const now = Date.now();
+      const expired = snap.docs.filter(d => d.data().deleteAtMs && d.data().deleteAtMs <= now);
+      expired.forEach(d => purgeChat(d.id));
+      const liveDocs = snap.docs.filter(d => !d.data().deleteAtMs || d.data().deleteAtMs > now);
+
+      const rows = await Promise.all(liveDocs.map(async (d) => {
+        const c = { id: d.id, ...d.data() };
+        const otherId = (c.participants || []).find(p => p !== user.id);
+        let otherUser = null;
+        let job = null;
+        try {
+          const [uSnap, jSnap] = await Promise.all([
+            otherId ? getDoc(doc(db, 'users', otherId)) : Promise.resolve(null),
+            c.jobId ? getDoc(doc(db, 'jobs', c.jobId)) : Promise.resolve(null),
+          ]);
+          if (uSnap?.exists()) otherUser = { id: uSnap.id, ...uSnap.data() };
+          if (jSnap?.exists()) job = { id: jSnap.id, ...jSnap.data() };
+        } catch {}
+        return { ...c, otherId, otherUser, otherName: otherUser?.name || 'Usuario', job };
+      }));
+      const ts = c => c.updatedAt?.toMillis?.() ?? c.createdAt?.toMillis?.() ?? 0;
+      setChats(rows.filter(r => r.job && r.otherUser).sort((a, b) => ts(b) - ts(a)));
+    }, () => setChats([]));
+  }, [user.id]);
+
+  if (chats === null) {
+    return <ActivityIndicator size="large" color={COLORS.accent} style={{ marginTop: 60 }} />;
+  }
+
+  const filtered = chats
+    .filter(c => chatFilter === 'all'
+      || (chatFilter === 'active' && c.job.status !== 'completed' && c.job.status !== 'cancelled')
+      || (chatFilter === 'completed' && (c.job.status === 'completed' || c.job.status === 'cancelled')))
+    .filter(c => !chatSearch
+      || c.otherName.toLowerCase().includes(chatSearch.toLowerCase())
+      || (c.job.title || '').toLowerCase().includes(chatSearch.toLowerCase()));
+
+  // VS Code-explorer style: group chats by job. A chat is a "past proposal" when the
+  // job was assigned to a different worker — it stays for reference but is read-only.
+  const workerOf = (c) => (c.participants || []).find(p => p !== c.job.userId);
+  const isPastChat = (c) => !!c.job.assignedTo && workerOf(c) !== c.job.assignedTo;
+  const recentTs = (c) => c.updatedAt?.toMillis?.() ?? c.createdAt?.toMillis?.() ?? 0;
+
+  const groupsMap = {};
+  for (const c of filtered) {
+    const jid = c.job.id;
+    if (!groupsMap[jid]) groupsMap[jid] = { job: c.job, chats: [], ts: 0 };
+    groupsMap[jid].chats.push(c);
+    groupsMap[jid].ts = Math.max(groupsMap[jid].ts, recentTs(c));
+  }
+  const groups = Object.values(groupsMap).sort((a, b) => b.ts - a.ts);
+
+  const renderChatRow = (item, past) => {
+    const when = item.updatedAt?.toDate?.() ?? item.createdAt?.toDate?.();
+    return (
+      <TouchableOpacity
+        key={item.id}
+        onPress={() => onOpenChat(item)}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 12, padding: 12, marginBottom: 8, marginLeft: 14, opacity: past ? 0.55 : 1 }}
+      >
+        {item.otherUser.profileImage
+          ? <Image source={{ uri: item.otherUser.profileImage }} style={{ width: 40, height: 40, borderRadius: 20 }} />
+          : <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 16 }}>{item.otherName[0]?.toUpperCase() || '?'}</Text>
+            </View>}
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{item.otherName}</Text>
+            {when && <Text style={{ color: C.muted, fontSize: 10 }}>{when.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</Text>}
+          </View>
+          {past ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
+              <Ionicons name="lock-closed-outline" size={11} color={C.muted} />
+              <Text style={{ color: C.muted, fontSize: 12 }} numberOfLines={1}>Propuesta no seleccionada</Text>
+            </View>
+          ) : (
+            <Text style={{ color: item.lastMessage ? C.muted : COLORS.accent, fontSize: 12, marginTop: 3 }} numberOfLines={1}>
+              {item.lastMessage || 'Empieza la conversación →'}
+            </Text>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={C.muted} />
+      </TouchableOpacity>
+    );
+  };
+
+  // Workers always have a single client per job, so they get a flat list (no folders).
+  const isWorkerView = user.role === 'worker';
+  const renderWorkerRow = (item) => {
+    const past = isPastChat(item);
+    const when = item.updatedAt?.toDate?.() ?? item.createdAt?.toDate?.();
+    return (
+      <TouchableOpacity
+        key={item.id}
+        onPress={() => onOpenChat(item)}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 14, padding: 14, marginBottom: 10, opacity: past ? 0.6 : 1 }}
+      >
+        {item.otherUser.profileImage
+          ? <Image source={{ uri: item.otherUser.profileImage }} style={{ width: 46, height: 46, borderRadius: 23 }} />
+          : <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 18 }}>{item.otherName[0]?.toUpperCase() || '?'}</Text>
+            </View>}
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{item.otherName}</Text>
+            {when && <Text style={{ color: C.muted, fontSize: 10 }}>{when.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</Text>}
+          </View>
+          <Text style={{ color: C.muted, fontSize: 12, marginTop: 1 }} numberOfLines={1}>{item.job.title}</Text>
+          {past ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
+              <Ionicons name="lock-closed-outline" size={11} color={C.muted} />
+              <Text style={{ color: C.muted, fontSize: 12 }} numberOfLines={1}>Propuesta no seleccionada</Text>
+            </View>
+          ) : (
+            <Text style={{ color: item.lastMessage ? C.muted : COLORS.accent, fontSize: 12, marginTop: 3 }} numberOfLines={1}>
+              {item.lastMessage || 'Empieza la conversación →'}
+            </Text>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={C.muted} />
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <>
+      <View style={[styles.searchBarWrap, { backgroundColor: C.card, borderColor: C.border }]}>
+        <Ionicons name="search-outline" size={16} color={C.muted} style={{ marginRight: 6 }} />
+        <TextInput
+          style={[styles.searchBarInput, { color: C.text }]}
+          value={chatSearch}
+          onChangeText={setChatSearch}
+          placeholder="Buscar por nombre o trabajo..."
+          placeholderTextColor={C.muted}
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+        />
+        {chatSearch.length > 0 && (
+          <TouchableOpacity onPress={() => setChatSearch('')}>
+            <Ionicons name="close-circle" size={16} color={C.muted} />
+          </TouchableOpacity>
+        )}
+      </View>
+      <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 8 }}>
+        {[
+          ['all', 'Todos'],
+          ['active', 'En curso'],
+          ['completed', 'Completados'],
+        ].map(([k, label]) => (
+          <TouchableOpacity
+            key={k}
+            style={[styles.filterChip, { backgroundColor: C.card, borderColor: C.border }, chatFilter === k && styles.filterChipActive]}
+            onPress={() => setChatFilter(k)}
+          >
+            <Text style={[styles.filterChipText, { color: C.muted }, chatFilter === k && styles.filterChipTextActive]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <FlatList
+        data={isWorkerView ? filtered : groups}
+        keyExtractor={isWorkerView ? (c => c.id) : (g => g.job.id)}
+        contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: 40 }}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Ionicons name="chatbubbles-outline" size={48} color={C.muted} style={{ marginBottom: 8 }} />
+            <Text style={[styles.emptyStateText, { color: C.muted }]}>
+              {chats.length === 0 ? 'Aún no tienes conversaciones' : 'Sin resultados con este filtro'}
+            </Text>
+            {chats.length === 0 && (
+              <Text style={{ color: C.muted, fontSize: 12, marginTop: 4, textAlign: 'center' }}>
+                {user.role === 'worker' ? 'Envía una propuesta para empezar a chatear.' : 'Los chats aparecen cuando un trabajador propone en tu trabajo.'}
+              </Text>
+            )}
+          </View>
+        }
+        renderItem={isWorkerView ? ({ item }) => renderWorkerRow(item) : ({ item: group }) => {
+          const active = group.chats.filter(c => !isPastChat(c)).sort((a, b) => recentTs(b) - recentTs(a));
+          const past = group.chats.filter(c => isPastChat(c)).sort((a, b) => recentTs(b) - recentTs(a));
+          const isCollapsed = !!collapsed[group.job.id];
+          return (
+            <View style={{ marginBottom: 14 }}>
+              {/* Folder header — tap to expand/collapse */}
+              <TouchableOpacity
+                onPress={() => setCollapsed(prev => ({ ...prev, [group.job.id]: !prev[group.job.id] }))}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 4 }}
+              >
+                <Ionicons name={isCollapsed ? 'chevron-forward' : 'chevron-down'} size={16} color={C.muted} />
+                <ServiceIcon type={group.job.type} size={28} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: C.text, fontWeight: '800', fontSize: 14 }} numberOfLines={1}>{group.job.title}</Text>
+                  <Text style={{ color: C.muted, fontSize: 11 }}>
+                    {active.length} {active.length === 1 ? 'activo' : 'activos'}{past.length > 0 ? ` · ${past.length} anterior${past.length === 1 ? '' : 'es'}` : ''}
+                  </Text>
+                </View>
+                <StatusBadge status={group.job.status} />
+              </TouchableOpacity>
+
+              {!isCollapsed && (
+                <View style={{ marginTop: 6 }}>
+                  {active.length === 0 && past.length > 0 && (
+                    <Text style={{ color: C.muted, fontSize: 12, marginLeft: 14, marginBottom: 8, fontStyle: 'italic' }}>Sin conversaciones activas</Text>
+                  )}
+                  {active.map(c => renderChatRow(c, false))}
+                  {past.length > 0 && (
+                    <>
+                      <Text style={{ color: C.muted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginLeft: 14, marginTop: 4, marginBottom: 6 }}>
+                        Propuestas anteriores
+                      </Text>
+                      {past.map(c => renderChatRow(c, true))}
+                    </>
+                  )}
+                </View>
+              )}
+            </View>
+          );
+        }}
+      />
+    </>
+  );
+}
+
+// One-line preview of a message, used in reply quotes and the reply bar
+const messagePreview = (m) => {
+  if (!m) return '';
+  if (m.type === 'image') return '📷 Foto';
+  if (m.type === 'video') return '🎥 Video';
+  if (m.type === 'quote_proposal') return '📋 Cotización';
+  if (m.type === 'schedule_proposal') return '📅 Propuesta de horario';
+  return m.text || '';
+};
+
+// Swipe a message bubble toward the center to reply (WhatsApp-style). Sent bubbles swipe
+// right→left, received bubbles swipe left→right. Calls onReply past the threshold.
+function SwipeableMessage({ children, onReply, fromMe }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const triggered = useRef(false);
+  const onReplyRef = useRef(onReply); onReplyRef.current = onReply;
+  const dir = fromMe ? -1 : 1; // -1 = swipe left (sent), +1 = swipe right (received)
+
+  const pan = useRef(
+    PanResponder.create({
+      // Claim on any horizontal-dominant drag (proven thresholds from the notification swipe),
+      // capturing it so it works on text, media, and either sender's bubbles.
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy),
+      onMoveShouldSetPanResponderCapture: (_, g) => Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy),
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => { triggered.current = false; },
+      onPanResponderMove: (_, g) => {
+        const mag = Math.max(0, Math.min(90, g.dx * dir)); // distance in the reply direction
+        translateX.setValue(mag * dir);
+        if (!triggered.current && mag >= 55) {
+          triggered.current = true;
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dx * dir >= 55) onReplyRef.current?.();
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, bounciness: 6, speed: 18 }).start();
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+      },
+    })
+  ).current;
+
+  const iconOpacity = translateX.interpolate(
+    fromMe ? { inputRange: [-60, -20, 0], outputRange: [1, 0.25, 0], extrapolate: 'clamp' }
+           : { inputRange: [0, 20, 60], outputRange: [0, 0.25, 1], extrapolate: 'clamp' }
+  );
+  const iconScale = translateX.interpolate(
+    fromMe ? { inputRange: [-60, -30, 0], outputRange: [1, 0.7, 0.4], extrapolate: 'clamp' }
+           : { inputRange: [0, 30, 60], outputRange: [0.4, 0.7, 1], extrapolate: 'clamp' }
+  );
+
+  return (
+    <View>
+      <Animated.View
+        pointerEvents="none"
+        style={{ position: 'absolute', [fromMe ? 'right' : 'left']: 14, top: 0, bottom: 0, justifyContent: 'center', opacity: iconOpacity, transform: [{ scale: iconScale }] }}
+      >
+        <Ionicons name="arrow-undo" size={20} color={COLORS.accent} />
+      </Animated.View>
+      <Animated.View style={{ transform: [{ translateX }] }} {...pan.panHandlers}>
+        {/* A touchable wrapper grabs the touch so the swipe negotiation works on every
+            bubble (plain text included), exactly like a bubble that already has one. */}
+        <TouchableOpacity activeOpacity={1} onPress={() => {}}>
+          {children}
+        </TouchableOpacity>
+      </Animated.View>
+    </View>
+  );
+}
+
+// Help sheet explaining the chat actions to workers
+function ChatHelpModal({ C, onClose }) {
+  const rows = [
+    { icon: 'pricetag-outline', color: COLORS.accent, title: 'Enviar cotización', desc: 'Envía tu precio final. El cliente lo acepta para contratarte (puedes ajustarlo después si es necesario).' },
+    { icon: 'cash-outline', color: COLORS.green, title: 'Cambiar a efectivo', desc: 'Pide al cliente cobrar en efectivo en lugar de tarjeta. El cliente debe aceptarlo.' },
+    { icon: 'calendar-outline', color: COLORS.blue, title: 'Proponer horario', desc: 'Agenda la fecha y hora de la visita. El cliente confirma.' },
+    { icon: 'image-outline', color: COLORS.accent, title: 'Enviar foto o video', desc: 'Comparte imágenes o un video corto (máx. 30s) del trabajo. Se agregan al mensaje antes de enviar.' },
+    { icon: 'car-outline', color: COLORS.blue, title: '🚗 En camino / 📍 He llegado', desc: 'Avisa tu estado al cliente el día del trabajo (aparece cuando estás asignado).' },
+    { icon: 'arrow-undo', color: COLORS.purple, title: 'Responder un mensaje', desc: 'Desliza un mensaje hacia el centro para responderlo directamente.' },
+  ];
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.scheduleOverlay}>
+        <View style={[styles.scheduleContent, { backgroundColor: C.card, maxHeight: '85%' }]}>
+          <Text style={[styles.scheduleTitle, { color: C.text }]}>❓ Guía del chat</Text>
+          <Text style={[styles.scheduleSubtitle, { color: C.muted }]}>Qué hace cada botón</Text>
+          <ScrollView style={{ marginTop: 4 }}>
+            {rows.map((r, i) => (
+              <View key={i} style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start', paddingVertical: 10, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: C.border }}>
+                <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: r.color + '22', justifyContent: 'center', alignItems: 'center' }}>
+                  <Ionicons name={r.icon} size={20} color={r.color} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>{r.title}</Text>
+                  <Text style={{ color: C.muted, fontSize: 12, lineHeight: 17, marginTop: 1 }}>{r.desc}</Text>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+          <TouchableOpacity style={[styles.primaryButton, { marginTop: 12 }]} onPress={onClose}>
+            <Text style={styles.primaryButtonText}>Entendido</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
+  const C = useTheme();
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [showQuote, setShowQuote] = useState(false);
   const [liveJob, setLiveJob] = useState(job);
+  const [otherProfile, setOtherProfile] = useState(null);
+  const [showOtherProfile, setShowOtherProfile] = useState(false);
+  const [chatMeta, setChatMeta] = useState(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [viewerItem, setViewerItem] = useState(null); // media opened fullscreen
+  const [replyingTo, setReplyingTo] = useState(null); // message being replied to
+  const [showChatHelp, setShowChatHelp] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState(null); // { uri, type } staged before sending
+  const [exactLoc, setExactLoc] = useState(null); // exact address from the private subcollection
+
+  // Mark this chat read for the current user on open + when new messages arrive while viewing
+  useEffect(() => {
+    if (!chatId) return;
+    updateDoc(doc(db, 'chats', chatId), { [`lastReadBy.${currentUser.id}`]: serverTimestamp() }).catch(() => {});
+  }, [chatId, messages.length]);
+
+  // Exact address lives in a private subcollection readable only by owner + assigned worker
+  useEffect(() => {
+    const canSee = liveJob?.locationShared && (liveJob.userId === currentUser.id || liveJob.assignedTo === currentUser.id);
+    if (!canSee || !liveJob?.id) { setExactLoc(null); return; }
+    return onSnapshot(
+      doc(db, 'jobs', liveJob.id, 'private', 'location'),
+      snap => setExactLoc(snap.exists() ? snap.data() : (liveJob.exactLocation || null)),
+      () => setExactLoc(liveJob.exactLocation || null)
+    );
+  }, [liveJob?.id, liveJob?.locationShared, liveJob?.userId, liveJob?.assignedTo]);
+
+  // Full profile of the other participant (for header avatar + profile view)
+  useEffect(() => {
+    if (!otherUser?.id) return;
+    getDoc(doc(db, 'users', otherUser.id))
+      .then(s => s.exists() && setOtherProfile({ id: s.id, ...s.data() }))
+      .catch(() => {});
+  }, [otherUser?.id]);
+
+  // Chat doc (for the auto-deletion timer)
+  useEffect(() => {
+    if (!chatId) return;
+    return onSnapshot(doc(db, 'chats', chatId), snap => {
+      if (snap.exists()) setChatMeta(snap.data());
+    });
+  }, [chatId]);
+
+  // Auto-show the chat guide the first time a worker opens the chat for each job listing
+  useEffect(() => {
+    if (currentUser.role !== 'worker' || !job?.id) return;
+    const key = `chat_help_${job.id}`;
+    AsyncStorage.getItem(key).then(v => {
+      if (!v) { setShowChatHelp(true); AsyncStorage.setItem(key, '1').catch(() => {}); }
+    }).catch(() => {});
+  }, [job?.id]);
+
+  const sendQuickStatus = async (kind) => {
+    const text = kind === 'on_way' ? '🚗 Voy en camino a tu domicilio.' : '📍 He llegado al domicilio.';
+    try {
+      await addDoc(collection(db, 'messages'), {
+        chatId, senderId: currentUser.id, senderName: currentUser.name,
+        type: 'text', text, createdAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'chats', chatId), { lastMessage: text, updatedAt: serverTimestamp() });
+      await createNotification(liveJob.userId, kind === 'on_way' ? 'worker_on_way' : 'worker_arrived', currentUser.name, {
+        jobTitle: liveJob.title, jobId: liveJob.id,
+      });
+    } catch {}
+  };
 
   useEffect(() => {
     if (!chatId) {
@@ -1182,26 +1780,85 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
   }, [job?.id]);
 
   const sendMessage = async () => {
-    if (!newMessage.trim()) return;
+    const text = newMessage.trim();
+    if (!text && !pendingMedia) return;
+    const replyData = replyingTo
+      ? { id: replyingTo.id, senderName: replyingTo.senderName, preview: messagePreview(replyingTo) }
+      : null;
 
+    setUploadingMedia(!!pendingMedia);
     try {
-      await addDoc(collection(db, 'messages'), {
-        chatId,
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        text: newMessage.trim(),
-        createdAt: serverTimestamp(),
-      });
-
-      await updateDoc(doc(db, 'chats', chatId), {
-        lastMessage: newMessage.trim(),
-        updatedAt: serverTimestamp(),
-      });
-
+      if (pendingMedia) {
+        // Upload the staged photo/video, then send it (optionally with a caption)
+        const isVideo = pendingMedia.type === 'video';
+        const ext = isVideo ? 'mp4' : 'jpg';
+        const ct = isVideo ? 'video/mp4' : 'image/jpeg';
+        const path = `jobs/${chatId}/chatmedia_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+        const url = await uploadImage(pendingMedia.uri, path, ct);
+        await addDoc(collection(db, 'messages'), {
+          chatId, senderId: currentUser.id, senderName: currentUser.name,
+          type: isVideo ? 'video' : 'image', mediaUrl: url, mediaPath: path,
+          ...(text ? { text } : {}),
+          ...(replyData ? { replyTo: replyData } : {}),
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, 'chats', chatId), { lastMessage: isVideo ? '🎥 Video' : '📷 Foto', updatedAt: serverTimestamp() });
+      } else {
+        await addDoc(collection(db, 'messages'), {
+          chatId, senderId: currentUser.id, senderName: currentUser.name,
+          text,
+          ...(replyData ? { replyTo: replyData } : {}),
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(doc(db, 'chats', chatId), { lastMessage: text, updatedAt: serverTimestamp() });
+      }
       setNewMessage('');
+      setReplyingTo(null);
+      setPendingMedia(null);
     } catch (error) {
       console.error('Error sending message:', error);
       Alert.alert('Error', 'No se pudo enviar el mensaje');
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
+  // Pick a photo or short video (≤30s). Images are compressed; the result is staged in the
+  // input (with an optional caption) instead of sending immediately.
+  const pickAndSendMedia = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) { Alert.alert('Permiso requerido', 'Permite el acceso a tu galería para compartir fotos o videos.'); return; }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        quality: 0.7,
+        videoMaxDuration: MAX_VIDEO_SECONDS,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      const isVideo = asset.type === 'video' || asset.mimeType?.startsWith('video');
+      if (isVideo && asset.duration && asset.duration > MAX_VIDEO_MS) {
+        Alert.alert('Video muy largo', `El video debe durar máximo ${MAX_VIDEO_SECONDS} segundos. Recórtalo e intenta de nuevo.`);
+        return;
+      }
+      if (isVideo) {
+        setPendingMedia({ uri: asset.uri, type: 'video' });
+        return;
+      }
+      // Compress images: downscale wide photos to 1280px and re-encode at 60% JPEG
+      let uri = asset.uri;
+      try {
+        const actions = asset.width && asset.width > 1280 ? [{ resize: { width: 1280 } }] : [];
+        const out = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          actions,
+          { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        uri = out.uri;
+      } catch {/* fall back to the original if manipulation fails */}
+      setPendingMedia({ uri, type: 'image' });
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo abrir la galería.');
     }
   };
 
@@ -1228,53 +1885,154 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
     } catch { Alert.alert('Error', 'No se pudo confirmar el horario'); }
   };
 
+  // Client accepts a worker's quote (the quote state lives on the message) → assigns the
+  // worker the first time, or just updates the agreed price for a re-quote.
+  const handleAcceptQuote = async (message) => {
+    if (!message || message.status === 'accepted') return;
+    const workerId = message.workerId || message.senderId;
+    const workerName = message.workerName || message.senderName;
+    const amount = message.amount;
+    const wasOpen = liveJob.status === 'open';
+    try {
+      // Card jobs: the worker must be able to receive card payments
+      if (liveJob.paymentMethod === 'card') {
+        const wSnap = await getDoc(doc(db, 'users', workerId));
+        if (!wSnap.exists() || !wSnap.data().stripeAccountId) {
+          Alert.alert('Trabajador sin cuenta bancaria', `${workerName} aún no ha vinculado su CLABE en Taskly, por lo que no puede recibir pagos con tarjeta.\n\nPídele que configure su cuenta o acuerden pago en efectivo.`);
+          return;
+        }
+      }
+      // Mark the quote message accepted (participant may update a message's status)
+      await updateDoc(doc(db, 'messages', message.id), { status: 'accepted' });
+
+      const jobRef = doc(db, 'jobs', liveJob.id);
+      if (wasOpen) {
+        await updateDoc(jobRef, {
+          status: 'assigned', assignedTo: workerId, assignedWorkerName: workerName,
+          assignedPrice: amount,
+        });
+        // Notify the other estimators. Their chats are kept (read-only) as "past proposals".
+        const otherBidders = (liveJob.bids || []).filter(b => b.userId !== workerId);
+        for (const b of otherBidders) {
+          await createNotification(b.userId, 'bid_declined', currentUser.name, { jobTitle: liveJob.title, jobId: liveJob.id });
+        }
+      } else {
+        await updateDoc(jobRef, { assignedPrice: amount });
+      }
+      await addDoc(collection(db, 'messages'), {
+        chatId, senderId: currentUser.id, senderName: currentUser.name,
+        type: 'quote_accepted',
+        text: `✅ ${currentUser.name} aceptó la cotización de $${fmtMXN(amount)} MXN`,
+        createdAt: serverTimestamp(),
+      });
+      await createNotification(workerId, wasOpen ? 'quote_accepted' : 'price_change_accepted', currentUser.name, { amount, jobId: liveJob.id, jobTitle: liveJob.title });
+    } catch { Alert.alert('Error', 'No se pudo aceptar la cotización'); }
+  };
+
+  const handleRejectQuote = async (message) => {
+    if (!message || message.status !== 'pending') return;
+    try {
+      await updateDoc(doc(db, 'messages', message.id), { status: 'rejected' });
+      await addDoc(collection(db, 'messages'), {
+        chatId, senderId: currentUser.id, senderName: currentUser.name,
+        type: 'text', text: '❌ No acepto esa cotización, ¿podemos ajustarla?',
+        createdAt: serverTimestamp(),
+      });
+    } catch { Alert.alert('Error', 'No se pudo rechazar la cotización'); }
+  };
+
+  // A "past proposal": the job was assigned to a different worker, so this chat is read-only.
+  const chatWorkerId = currentUser.id === liveJob?.userId ? otherUser?.id : currentUser.id;
+  const isPastProposal = !!liveJob?.assignedTo && !!chatWorkerId && chatWorkerId !== liveJob.assignedTo;
+
   return (
     <Modal visible={true} animationType="slide">
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        
-        <View style={styles.modalHeader}>
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeButton}>← Cerrar</Text>
           </TouchableOpacity>
-          <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={styles.modalTitle}>{otherUser.name}</Text>
-            <Text style={styles.chatSubtitle}>{job.title}</Text>
-          </View>
+          <TouchableOpacity
+            style={{ flex: 1, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
+            onPress={() => otherProfile && setShowOtherProfile(true)}
+          >
+            {otherProfile?.profileImage
+              ? <Image source={{ uri: otherProfile.profileImage }} style={{ width: 34, height: 34, borderRadius: 17 }} />
+              : <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 14 }}>{otherUser.name?.[0]?.toUpperCase() || '?'}</Text>
+                </View>}
+            <View style={{ alignItems: 'flex-start' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Text style={[styles.modalTitle, { color: C.text }]} numberOfLines={1}>{otherUser.name}</Text>
+                <Ionicons name="chevron-forward" size={13} color={C.muted} />
+              </View>
+              <Text style={[styles.chatSubtitle, { color: C.muted }]} numberOfLines={1}>{job.title}</Text>
+            </View>
+          </TouchableOpacity>
           <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
             {/* Request cash payment — only for workers on card jobs */}
-            {currentUser.role === 'worker' && liveJob?.paymentMethod === 'card' && (
-              <TouchableOpacity onPress={async () => {
-                try {
-                  await addDoc(collection(db, 'messages'), {
-                    chatId, senderId: currentUser.id, senderName: currentUser.name,
-                    type: 'payment_change_request', status: 'pending',
-                    text: 'Solicitud de cambio a efectivo',
-                    createdAt: serverTimestamp(),
-                  });
-                } catch { Alert.alert('Error', 'No se pudo enviar la solicitud'); }
+            {currentUser.role === 'worker' && liveJob?.paymentMethod === 'card' && !isPastProposal && (
+              <TouchableOpacity onPress={() => {
+                Alert.alert(
+                  'Cambiar a pago en efectivo',
+                  '¿Solicitar al cliente cambiar el método de pago a efectivo? Recibirás el pago en mano y no se procesará por tarjeta.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    { text: 'Solicitar', onPress: async () => {
+                      try {
+                        await addDoc(collection(db, 'messages'), {
+                          chatId, senderId: currentUser.id, senderName: currentUser.name,
+                          type: 'payment_change_request', status: 'pending',
+                          text: 'Solicitud de cambio a efectivo',
+                          createdAt: serverTimestamp(),
+                        });
+                      } catch { Alert.alert('Error', 'No se pudo enviar la solicitud'); }
+                    }},
+                  ]
+                );
               }}>
                 <Ionicons name="cash-outline" size={24} color={COLORS.muted} />
               </TouchableOpacity>
             )}
-            {/* ✅ Schedule button in chat header */}
-            <TouchableOpacity onPress={() => setShowSchedule(true)}>
-              <Ionicons name="calendar-outline" size={24} color={COLORS.muted} />
-            </TouchableOpacity>
+            {/* 📋 Send quotation — workers, before the job is paid/completed */}
+            {currentUser.role === 'worker' && liveJob?.status !== 'completed' && !liveJob?.paymentRequested
+              && (liveJob?.status === 'open' || liveJob?.assignedTo === currentUser.id) && (
+              <TouchableOpacity onPress={() => setShowQuote(true)}>
+                <Ionicons name="pricetag-outline" size={24} color={COLORS.muted} />
+              </TouchableOpacity>
+            )}
+            {/* ✅ Schedule button in chat header (hidden on read-only past proposals) */}
+            {!isPastProposal && (
+              <TouchableOpacity onPress={() => setShowSchedule(true)}>
+                <Ionicons name="calendar-outline" size={24} color={COLORS.muted} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
         {/* ✅ Location bar shown inline in chat when shared */}
-        {liveJob?.locationShared && liveJob?.exactLocation && (
+        {liveJob?.locationShared && exactLoc && (
           <View style={styles.chatLocationBar}>
             <Ionicons name="location" size={16} color={COLORS.accent} />
-            <Text style={styles.chatLocationText} numberOfLines={1}>
-              {liveJob.exactLocation.address}
+            <Text style={[styles.chatLocationText, { color: C.text }]} numberOfLines={1}>
+              {exactLoc.address}
             </Text>
             <TouchableOpacity onPress={() => Linking.openURL(
-              `https://www.google.com/maps/search/?api=1&query=${liveJob.exactLocation.lat},${liveJob.exactLocation.lng}`)}>
+              `https://www.google.com/maps/search/?api=1&query=${exactLoc.lat},${exactLoc.lng}`)}>
               <Text style={styles.chatLocationLink}>Ver mapa →</Text>
             </TouchableOpacity>
+          </View>
+        )}
+
+        {/* 🗑 Auto-deletion countdown once the job is paid & completed */}
+        {chatMeta?.deleteAtMs && (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.red + '15', paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.red + '33' }}>
+            <Ionicons name="trash-outline" size={14} color={COLORS.red} />
+            <Text style={{ color: COLORS.red, fontSize: 12, flex: 1 }}>
+              Trabajo completado — este chat se eliminará automáticamente en {Math.max(1, Math.ceil((chatMeta.deleteAtMs - Date.now()) / 3600000))} horas.
+            </Text>
           </View>
         )}
 
@@ -1283,7 +2041,7 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
           <TouchableOpacity style={styles.scheduledBanner}
             onPress={() => addToCalendar(job.title,
               liveJob.scheduledTime.date, liveJob.scheduledTime.time,
-              liveJob.exactLocation?.address || '')}>
+              exactLoc?.address || '')}>
             <Text style={styles.scheduledBannerText}>
               📅 {liveJob.scheduledTime.date} · {liveJob.scheduledTime.time}
             </Text>
@@ -1291,15 +2049,25 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
           </TouchableOpacity>
         )}
 
-        <KeyboardAvoidingView 
-          style={{ flex: 1 }} 
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={90}
+          keyboardVerticalOffset={0}
         >
           <FlatList
             data={messages}
+            style={{ flex: 1 }}
             keyExtractor={item => item.id}
-            contentContainerStyle={styles.messagesList}
+            contentContainerStyle={[styles.messagesList, { flexGrow: 1 }]}
+            keyboardShouldPersistTaps="handled"
+            ListHeaderComponent={
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 12, padding: 10, marginBottom: 12 }}>
+                <Ionicons name="time-outline" size={14} color={C.muted} />
+                <Text style={{ color: C.muted, fontSize: 11, lineHeight: 15, flex: 1 }}>
+                  Por privacidad, este chat, el trabajo y los archivos compartidos se eliminan automáticamente 30 días después de completarse el pago o de cancelarse el trabajo.
+                </Text>
+              </View>
+            }
             ListEmptyComponent={
               loading ? (
                 <ActivityIndicator size="large" color={COLORS.accent} style={{ marginTop: 40 }} />
@@ -1317,7 +2085,7 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                 const isRequester = item.senderId === currentUser.id;
                 const isResolved = item.status === 'accepted' || item.status === 'declined';
                 return (
-                  <View style={[styles.scheduleCard, isResolved && { opacity: 0.55 }]}>
+                  <View style={[styles.scheduleCard, { backgroundColor: C.card, borderColor: C.border }, isResolved && { opacity: 0.55 }]}>
                     <Text style={styles.scheduleCardTitle}>
                       {item.status === 'accepted' ? '✅ Cambio a efectivo aceptado'
                         : item.status === 'declined' ? '❌ Cambio a efectivo rechazado'
@@ -1364,6 +2132,45 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                 );
               }
 
+              // Quotation card (worker → client). Accepting assigns the worker / updates the agreed price.
+              if (item.type === 'quote_proposal') {
+                const status = item.status || 'pending';
+                const qWorkerId = item.workerId || item.senderId;
+                const isAgreed = status === 'accepted';
+                const isRejected = status === 'rejected';
+                // Pending quote but the job already went to a different worker → no longer actionable
+                const isStale = status === 'pending' && !!liveJob?.assignedTo && liveJob.assignedTo !== qWorkerId;
+                const isRequote = liveJob?.status === 'assigned' && liveJob?.assignedTo === qWorkerId && !isAgreed;
+                const canAct = !isMe && status === 'pending' && !isStale;
+                return (
+                  <View style={[styles.scheduleCard, { backgroundColor: C.card, borderColor: C.border }, (isRejected || isStale) && { opacity: 0.5 }]}>
+                    <Text style={styles.scheduleCardTitle}>
+                      {isAgreed ? '✅ Cotización aceptada'
+                       : isRejected ? '❌ Cotización rechazada'
+                       : isStale ? '📋 Cotización anterior'
+                       : isRequote ? '📋 Nuevo precio propuesto'
+                       : '📋 Cotización final'}
+                    </Text>
+                    <PriceText value={item.amount} style={[styles.scheduleCardTime, { color: C.text }]} />
+                    {canAct && (
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                        <TouchableOpacity style={[styles.scheduleBtn, { flex: 1, backgroundColor: COLORS.green }]}
+                          onPress={() => handleAcceptQuote(item)}>
+                          <Text style={styles.scheduleBtnText}>✓ {isRequote ? 'Aceptar precio' : 'Aceptar y contratar'}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.scheduleBtn, { flex: 1, backgroundColor: COLORS.red }]}
+                          onPress={() => handleRejectQuote(item)}>
+                          <Text style={styles.scheduleBtnText}>✕ Rechazar</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {isMe && status === 'pending' && !isStale && (
+                      <Text style={[styles.formHint, { marginTop: 8 }]}>⏳ Esperando respuesta del cliente...</Text>
+                    )}
+                  </View>
+                );
+              }
+
               // Schedule proposal card
               if (item.type === 'schedule_proposal') {
                 const scheduleStatus = liveJob?.scheduledTime?.date === item.scheduledDate
@@ -1373,13 +2180,13 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                 const isDeclined = scheduleStatus === 'declined';
 
                 return (
-                  <View style={[styles.scheduleCard, isDeclined && { opacity: 0.45 }]}>
+                  <View style={[styles.scheduleCard, { backgroundColor: C.card, borderColor: C.border }, isDeclined && { opacity: 0.45 }]}>
                     <Text style={styles.scheduleCardTitle}>
                       {isAgreed   ? '✅ Horario Confirmado'
                        : isDeclined ? '❌ Propuesta Rechazada'
                        : '📅 Propuesta de Horario'}
                     </Text>
-                    <Text style={styles.scheduleCardTime}>
+                    <Text style={[styles.scheduleCardTime, { color: C.text }]}>
                       {item.scheduledDate} · {item.scheduledTime}
                     </Text>
                     {!isMe && !isAgreed && !isDeclined && (
@@ -1414,7 +2221,7 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                     {isAgreed && (
                       <TouchableOpacity style={[styles.scheduleBtn, { backgroundColor: COLORS.blue, marginTop: 10 }]}
                         onPress={() => addToCalendar(job.title, item.scheduledDate, item.scheduledTime,
-                          liveJob.exactLocation?.address || '')}>
+                          exactLoc?.address || '')}>
                         <Text style={styles.scheduleBtnText}>📅 Agregar a calendario</Text>
                       </TouchableOpacity>
                     )}
@@ -1425,43 +2232,146 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
                 );
               }
 
+              // Photo / video message
+              if ((item.type === 'image' || item.type === 'video') && item.mediaUrl) {
+                return (
+                  <SwipeableMessage fromMe={isMe} onReply={() => setReplyingTo(item)}>
+                    <View style={[styles.messageBubble, isMe ? styles.myMessage : [styles.theirMessage, { backgroundColor: C.card, borderColor: C.border }], { padding: 4 }]}>
+                      {!isMe && <Text style={[styles.messageSender, { color: C.muted, marginLeft: 4, marginTop: 2 }]}>{item.senderName}</Text>}
+                      {item.replyTo && (
+                        <View style={{ borderLeftWidth: 3, borderLeftColor: isMe ? 'rgba(255,255,255,0.7)' : COLORS.accent, paddingLeft: 8, paddingVertical: 2, marginHorizontal: 4, marginBottom: 4 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: isMe ? 'rgba(255,255,255,0.95)' : COLORS.accent }} numberOfLines={1}>{item.replyTo.senderName}</Text>
+                          <Text style={{ fontSize: 12, color: isMe ? 'rgba(255,255,255,0.85)' : C.muted }} numberOfLines={1}>{item.replyTo.preview}</Text>
+                        </View>
+                      )}
+                      <TouchableOpacity activeOpacity={0.9} onPress={() => setViewerItem({ url: item.mediaUrl, type: item.type })}>
+                        {item.type === 'image' ? (
+                          <Image source={{ uri: item.mediaUrl }} style={{ width: 200, height: 200, borderRadius: 10 }} />
+                        ) : (
+                          <View style={{ width: 200, height: 200, borderRadius: 10, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
+                            <Ionicons name="play-circle" size={52} color="#fff" />
+                            <Text style={{ color: '#fff', fontSize: 11, marginTop: 4, fontWeight: '600' }}>Video</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                      {!!item.text && (
+                        <Text style={[styles.messageText, { color: C.text, marginLeft: 4, marginTop: 5 }, isMe && styles.myMessageText]}>{item.text}</Text>
+                      )}
+                      {item.createdAt && (
+                        <Text style={[styles.messageTime, isMe && styles.myMessageTime, { marginLeft: 4 }]}>
+                          {new Date(item.createdAt.toDate()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      )}
+                    </View>
+                  </SwipeableMessage>
+                );
+              }
+
               return (
-                <View style={[styles.messageBubble, isMe ? styles.myMessage : styles.theirMessage]}>
-                  {!isMe && <Text style={styles.messageSender}>{item.senderName}</Text>}
-                  <Text style={[styles.messageText, isMe && styles.myMessageText]}>
-                    {item.text}
-                  </Text>
-                  {item.createdAt && (
-                    <Text style={[styles.messageTime, isMe && styles.myMessageTime]}>
-                      {new Date(item.createdAt.toDate()).toLocaleTimeString([], { 
-                        hour: '2-digit', 
-                        minute: '2-digit' 
-                      })}
+                <SwipeableMessage fromMe={isMe} onReply={() => setReplyingTo(item)}>
+                  <View style={[styles.messageBubble, isMe ? styles.myMessage : [styles.theirMessage, { backgroundColor: C.card, borderColor: C.border }]]}>
+                    {!isMe && <Text style={[styles.messageSender, { color: C.muted }]}>{item.senderName}</Text>}
+                    {item.replyTo && (
+                      <View style={{ borderLeftWidth: 3, borderLeftColor: isMe ? 'rgba(255,255,255,0.7)' : COLORS.accent, paddingLeft: 8, paddingVertical: 2, marginBottom: 5 }}>
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: isMe ? 'rgba(255,255,255,0.95)' : COLORS.accent }} numberOfLines={1}>{item.replyTo.senderName}</Text>
+                        <Text style={{ fontSize: 12, color: isMe ? 'rgba(255,255,255,0.85)' : C.muted }} numberOfLines={1}>{item.replyTo.preview}</Text>
+                      </View>
+                    )}
+                    <Text style={[styles.messageText, { color: C.text }, isMe && styles.myMessageText]}>
+                      {item.text}
                     </Text>
-                  )}
-                </View>
+                    {item.createdAt && (
+                      <Text style={[styles.messageTime, isMe && styles.myMessageTime]}>
+                        {new Date(item.createdAt.toDate()).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </Text>
+                    )}
+                  </View>
+                </SwipeableMessage>
               );
             }}
           />
 
-          <View style={styles.messageInputContainer}>
-            <TextInput
-              style={styles.messageInput}
-              value={newMessage}
-              onChangeText={setNewMessage}
-              placeholder="Escribe un mensaje..."
-              placeholderTextColor={COLORS.muted}
-              multiline
-              maxLength={500}
-            />
-            <TouchableOpacity 
-              style={[styles.sendButton, !newMessage.trim() && styles.sendButtonDisabled]}
-              onPress={sendMessage}
-              disabled={!newMessage.trim()}
-            >
-              <Text style={styles.sendButtonText}>→</Text>
-            </TouchableOpacity>
-          </View>
+          {/* Quick status buttons — assigned worker on job day */}
+          {currentUser.role === 'worker' && liveJob?.assignedTo === currentUser.id && liveJob?.status === 'assigned' && (
+            <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.border, backgroundColor: C.bg }}>
+              <TouchableOpacity
+                style={{ flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 9, borderRadius: 10, backgroundColor: COLORS.blue + '22', borderWidth: 1, borderColor: COLORS.blue }}
+                onPress={() => sendQuickStatus('on_way')}
+              >
+                <Text style={{ color: COLORS.blue, fontWeight: '700', fontSize: 13 }}>🚗 En camino</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 9, borderRadius: 10, backgroundColor: COLORS.green + '22', borderWidth: 1, borderColor: COLORS.green }}
+                onPress={() => sendQuickStatus('arrived')}
+              >
+                <Text style={{ color: COLORS.green, fontWeight: '700', fontSize: 13 }}>📍 He llegado</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {isPastProposal ? (
+            <View style={[styles.messageInputContainer, { backgroundColor: C.bg, borderTopColor: C.border, alignItems: 'center', justifyContent: 'center' }]}>
+              <Ionicons name="lock-closed-outline" size={15} color={C.muted} style={{ marginRight: 6 }} />
+              <Text style={{ color: C.muted, fontSize: 12, flexShrink: 1, textAlign: 'center' }}>
+                Esta propuesta ya no está activa — el trabajo fue asignado a otro trabajador.
+              </Text>
+            </View>
+          ) : (
+            <>
+            {replyingTo && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 12, marginTop: 8, marginBottom: 4, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border }}>
+                <Ionicons name="arrow-undo" size={16} color={COLORS.accent} />
+                <View style={{ width: 3, alignSelf: 'stretch', backgroundColor: COLORS.accent, borderRadius: 2 }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: COLORS.accent, fontWeight: '700', fontSize: 12, marginBottom: 1 }} numberOfLines={1}>Respondiendo a {replyingTo.senderName}</Text>
+                  <Text style={{ color: C.muted, fontSize: 13 }} numberOfLines={1}>{messagePreview(replyingTo)}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setReplyingTo(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close-circle" size={20} color={C.muted} />
+                </TouchableOpacity>
+              </View>
+            )}
+            {pendingMedia && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 12, marginTop: 8, marginBottom: 4, padding: 8, backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border }}>
+                {pendingMedia.type === 'image'
+                  ? <Image source={{ uri: pendingMedia.uri }} style={{ width: 48, height: 48, borderRadius: 8 }} />
+                  : <View style={{ width: 48, height: 48, borderRadius: 8, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}><Ionicons name="play" size={20} color="#fff" /></View>}
+                <Text style={{ flex: 1, color: C.muted, fontSize: 13 }}>{pendingMedia.type === 'image' ? '📷 Foto lista — añade un comentario (opcional)' : '🎥 Video listo — añade un comentario (opcional)'}</Text>
+                <TouchableOpacity onPress={() => setPendingMedia(null)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name="close-circle" size={22} color={C.muted} />
+                </TouchableOpacity>
+              </View>
+            )}
+            <View style={[styles.messageInputContainer, { backgroundColor: C.bg, borderTopColor: C.border }]}>
+              <TouchableOpacity
+                style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, justifyContent: 'center', alignItems: 'center', marginRight: 8 }}
+                onPress={pickAndSendMedia}
+                disabled={uploadingMedia || !!pendingMedia}
+              >
+                <Ionicons name="image-outline" size={20} color={pendingMedia ? C.border : COLORS.accent} />
+              </TouchableOpacity>
+              <TextInput
+                style={[styles.messageInput, { backgroundColor: C.card, borderColor: C.border, color: C.text }]}
+                value={newMessage}
+                onChangeText={setNewMessage}
+                placeholder={pendingMedia ? 'Añade un comentario...' : 'Escribe un mensaje...'}
+                placeholderTextColor={C.muted}
+                multiline
+                maxLength={500}
+              />
+              <TouchableOpacity
+                style={[styles.sendButton, (!newMessage.trim() && !pendingMedia) && styles.sendButtonDisabled]}
+                onPress={sendMessage}
+                disabled={(!newMessage.trim() && !pendingMedia) || uploadingMedia}
+              >
+                {uploadingMedia ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.sendButtonText}>→</Text>}
+              </TouchableOpacity>
+            </View>
+            </>
+          )}
         </KeyboardAvoidingView>
 
         {showSchedule && (
@@ -1472,6 +2382,29 @@ function ChatScreen({ chatId, otherUser, job, currentUser, onClose }) {
             chatId={chatId}
             onClose={() => setShowSchedule(false)}
           />
+        )}
+
+        {showQuote && (
+          <QuoteModal
+            job={liveJob}
+            currentUser={currentUser}
+            otherUserId={otherUser.id}
+            chatId={chatId}
+            onClose={() => setShowQuote(false)}
+          />
+        )}
+
+        {viewerItem && (
+          <MediaViewerModal items={[viewerItem]} onClose={() => setViewerItem(null)} />
+        )}
+
+        {showChatHelp && <ChatHelpModal C={C} onClose={() => setShowChatHelp(false)} />}
+
+        {/* Profile of the other participant, opened from the chat header */}
+        {showOtherProfile && otherProfile && (
+          otherProfile.role === 'worker'
+            ? <WorkerProfileModal worker={otherProfile} currentUser={currentUser} onClose={() => setShowOtherProfile(false)} />
+            : <ClientProfileModal client={otherProfile} onClose={() => setShowOtherProfile(false)} />
         )}
       </SafeAreaView>
     </Modal>
@@ -1494,6 +2427,12 @@ function RatingModal({ job, worker, client, onClose, onSubmit, ratingType = 'wor
     try {
       await onSubmit(rating, review, ratingType);
       onClose();
+      // Happy moment → ask for an App Store / Play Store review (OS decides if/when to show it)
+      if (rating === 5) {
+        try {
+          if (await StoreReview.isAvailableAsync()) await StoreReview.requestReview();
+        } catch {}
+      }
     } catch (error) {
       Alert.alert('Error', 'No se pudo enviar la calificación');
     } finally {
@@ -1682,7 +2621,7 @@ const shareReceipt = async ({ job, forWorker, clientName, workerName }) => {
   const total       = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0);
   const commission  = Math.round(total * 0.025 * 100) / 100;
   const workerReceives = Math.round((total - commission) * 100) / 100;
-  const stripe      = calcStripeFees(job.assignedPrice || 0);
+  const stripe      = calcStripeFees(total);
   const date        = (() => {
     const ref = job.completedAt || job.paymentInitiatedAt;
     return ref
@@ -1723,7 +2662,7 @@ const shareReceipt = async ({ job, forWorker, clientName, workerName }) => {
 };
 
 // 💳 Payment Tracker — 4-step timeline shown in job detail and payment history
-function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName }) {
+function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientName, workerName }) {
   const C = useTheme();
   const completedDate = (() => {
     const ref = job.completedAt || job.paymentInitiatedAt;
@@ -1731,9 +2670,30 @@ function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName })
     return (ref.toDate?.() ?? new Date(ref)).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
   })();
 
-  const payout = payoutStatus?.payouts?.[0];
-  const step3 = payout?.status === 'in_transit' || payout?.status === 'paid';
-  const step4 = payout?.status === 'paid';
+  // Per-job deposit status, traced through Stripe for THIS job's payment (real dates).
+  const [jobPayout, setJobPayout] = useState(null);
+  const perJobApplies = isWorker && job.paymentMethod === 'card' && !!workerAccountId && !!job.stripePaymentIntentId;
+  useEffect(() => {
+    if (!perJobApplies) return;
+    let active = true;
+    authedFetch(`${BACKEND_URL}/job-payout-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stripeAccountId: workerAccountId, paymentIntentId: job.stripePaymentIntentId, transferId: job.transferId || undefined }),
+    })
+      .then(r => r.json())
+      .then(d => { if (active) setJobPayout(d && !d.error ? d : {}); })
+      .catch(() => { if (active) setJobPayout({}); });
+    return () => { active = false; };
+  }, [job.id, workerAccountId, job.stripePaymentIntentId]);
+
+  // Use ONLY this job's payout — never the account-level latest payout, which belongs to
+  // a different job and produced the wrong dates (e.g. a jun-17 job showing a jun-14 deposit).
+  const payout = jobPayout?.payout || null;
+  const transferred = !!jobPayout?.transferred;        // money reached the worker's Stripe account
+  const loadingPerJob = perJobApplies && jobPayout === null;
+  const step3 = payout?.status === 'in_transit' || payout?.status === 'paid';  // payout en route to bank
+  const step4 = payout?.status === 'paid';                                     // landed in the bank
   const arrivalDate = payout?.arrival_date
     ? new Date(payout.arrival_date * 1000).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
@@ -1755,13 +2715,18 @@ function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName })
     {
       icon: 'arrow-forward-circle',
       label: 'En camino al banco',
-      sub: step3 ? (arrivalDate ? `Llega el ${arrivalDate}` : 'En tránsito') : (pendingMXN !== null ? `$${pendingMXN.toFixed(2)} MXN procesando` : 'Esperando ciclo de pago'),
+      sub: arrivalDate ? `Llega el ${arrivalDate}`
+        : loadingPerJob ? 'Verificando con Stripe…'
+        : transferred ? 'Procesando — Stripe deposita en días hábiles'
+        : 'Esperando ciclo de pago de Stripe',
       done: step3,
     },
     {
       icon: 'cash',
       label: 'Depositado en tu cuenta',
-      sub: step4 ? (arrivalDate ? `Depositado el ${arrivalDate}` : 'Completado') : 'Pendiente',
+      sub: step4 ? (arrivalDate ? `Depositado el ${arrivalDate}` : 'Completado')
+        : loadingPerJob ? 'Verificando…'
+        : 'Pendiente',
       done: step4,
     },
   ];
@@ -1797,11 +2762,13 @@ function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName })
     <View style={{ gap: 0 }}>
       {steps.map((s, i) => {
         const lineColor = s.done ? COLORS.green + '66' : C.border;
-        const iconColor = s.done ? COLORS.green : C.border;
+        // Completed → green check; pending → a clearly-gray hollow circle
+        const iconColor = s.done ? COLORS.green : C.muted;
+        const iconName = s.done ? s.icon : 'ellipse-outline';
         return (
           <View key={i} style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
             <View style={{ alignItems: 'center', width: 22 }}>
-              <Ionicons name={s.icon} size={20} color={iconColor} />
+              <Ionicons name={iconName} size={20} color={iconColor} />
               {i < steps.length - 1 && <View style={{ width: 2, height: 20, backgroundColor: lineColor, marginTop: 2 }} />}
             </View>
             <View style={{ flex: 1, paddingBottom: i < steps.length - 1 ? 10 : 0 }}>
@@ -1834,19 +2801,25 @@ function PaymentTracker({ job, payoutStatus, isWorker, clientName, workerName })
 
 // 💳 Payment Modal — native Apple/Google Pay + Card (Stripe only)
 // Fee rates used to gross-up client payment so worker always receives the quoted price
-const TASKLY_RATE        = 0.025; // Taskly's 2.5% commission
+const TASKLY_RATE        = 0.025; // Taskly's 2.5% commission (deducted from the worker)
 const STRIPE_RATE        = 0.036; // Stripe Mexico: 3.6% of charge
 const STRIPE_FIXED_FEE   = 3;     // Stripe Mexico: +$3 MXN flat per transaction
+const STRIPE_IVA         = 0.16;  // Mexico adds 16% IVA on top of Stripe's processing fee
 
-function calcStripeFees(jobAmount) {
-  // Worker receives jobAmount. Client pays enough to cover:
-  //   • Stripe fee: 3.6% of clientTotal + $3 MXN fixed
-  //   • Taskly fee: 2.5% of clientTotal
-  // Solving: jobAmount = clientTotal * (1 - STRIPE_RATE - TASKLY_RATE) - STRIPE_FIXED_FEE
-  const clientTotal   = Math.ceil((jobAmount + STRIPE_FIXED_FEE) / (1 - STRIPE_RATE - TASKLY_RATE));
-  const tasklyFee     = Math.round(clientTotal * TASKLY_RATE);
-  const processingFee = clientTotal - jobAmount - tasklyFee;
-  return { clientTotal, tasklyFee, processingFee };
+function calcStripeFees(jobAmount, tip = 0) {
+  // Fee model (worker absorbs Taskly's cut; client covers only Stripe's processing):
+  //   • Worker receives  = jobAmount − 2.5% (Taskly)  + 100% of any tip
+  //   • Taskly keeps     = 2.5% of jobAmount  (out of the worker's payout)
+  //   • Client pays      = jobAmount + tip + Stripe's processing fee (incl. 16% IVA)
+  // Gross-up so the charge covers Stripe's % + fixed fee + IVA:
+  const rateEff  = STRIPE_RATE * (1 + STRIPE_IVA);       // effective % incl. IVA
+  const fixedEff = STRIPE_FIXED_FEE * (1 + STRIPE_IVA);  // effective fixed incl. IVA
+  const base = jobAmount + tip;
+  const clientTotal    = Math.ceil((base + fixedEff) / (1 - rateEff));
+  const tasklyFee      = Math.round(jobAmount * TASKLY_RATE * 100) / 100;
+  const workerReceives = Math.round((jobAmount - tasklyFee + tip) * 100) / 100;
+  const processingFee  = Math.round((clientTotal - base) * 100) / 100; // what the client pays Stripe
+  return { clientTotal, workerReceives, tasklyFee, processingFee };
 }
 
 function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, workerId, clientEmail, jobId }) {
@@ -1855,9 +2828,11 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
   const showPlatformPay = Platform.OS === 'ios' || Platform.OS === 'android';
   const [platformLoading, setPlatformLoading] = useState(false);
   const [cardLoading, setCardLoading]         = useState(false);
+  const [tip, setTip] = useState(0);
   const anyLoading = platformLoading || cardLoading;
 
-  const stripe = calcStripeFees(jobAmount);
+  // Tip is grossed-up with the job amount so the worker receives 100% of it
+  const stripe = calcStripeFees(jobAmount, tip);
 
   const fetchSheetParams = async (grossAmount) => {
     let workerStripeAccountId = null;
@@ -1867,10 +2842,10 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
         if (snap.exists()) workerStripeAccountId = snap.data().stripeAccountId || null;
       } catch {}
     }
-    const res = await fetch(`${BACKEND_URL}/create-payment-sheet`, {
+    const res = await authedFetch(`${BACKEND_URL}/create-payment-sheet`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: grossAmount, currency: 'mxn', description, workerStripeAccountId, clientEmail, jobId }),
+      body: JSON.stringify({ amount: grossAmount, workerAmount: stripe.workerReceives, currency: 'mxn', description, workerStripeAccountId, clientEmail, jobId }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -1894,7 +2869,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
         if (!userCanceled) Alert.alert('Error Apple Pay', `${error.message}\n\nCódigo: ${error.code}`);
         return;
       }
-      onSuccess(data.paymentIntentClientSecret.split('_secret_')[0]);
+      onSuccess(data.paymentIntentClientSecret.split('_secret_')[0], tip);
     } catch (e) {
       Alert.alert('Error de pago', e.message || 'No se pudo procesar el pago.');
     } finally {
@@ -1913,11 +2888,13 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
         customerEphemeralKeySecret: data.ephemeralKeySecret,
         allowsDelayedPaymentMethods: false,
         style: 'automatic',
+        // Pre-fill the billing country as Mexico (was defaulting to the US)
+        defaultBillingDetails: { address: { country: 'MX' } },
       });
       if (initError) throw new Error(initError.message);
       const { error } = await presentPaymentSheet();
       if (error) { if (error.code !== 'Canceled') throw new Error(error.message); return; }
-      onSuccess(data.paymentIntentClientSecret.split('_secret_')[0]);
+      onSuccess(data.paymentIntentClientSecret.split('_secret_')[0], tip);
     } catch (e) {
       Alert.alert('Error de pago', e.message || 'No se pudo procesar el pago.');
     } finally {
@@ -1942,11 +2919,33 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
           </View>
           <Text style={styles.paymentDescription}>{description}</Text>
 
+          {/* Tip selector — 100% goes to the worker */}
+          <View style={{ marginTop: 10 }}>
+            <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: '700', marginBottom: 8 }}>PROPINA (100% para el trabajador)</Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {[0, 20, 50, 100].map(t => (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => setTip(t)}
+                  disabled={anyLoading}
+                  style={{ flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: tip === t ? COLORS.green : COLORS.border, backgroundColor: tip === t ? COLORS.green + '22' : COLORS.card }}
+                >
+                  <Text style={{ color: tip === t ? COLORS.green : COLORS.muted, fontWeight: '700', fontSize: 13 }}>
+                    {t === 0 ? 'Sin propina' : `$${t}`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
           {/* Fee breakdown card */}
           <View style={{ backgroundColor: COLORS.card, borderRadius: 12, padding: 14, marginTop: 10, marginBottom: 16, borderWidth: 1, borderColor: COLORS.border }}>
-            <Row label="Servicio (el trabajador recibe)" value={`$${jobAmount} MXN`} />
-            <Row label={`Comisión Taskly (${(TASKLY_RATE * 100).toFixed(1)}%)`} value={`+ $${stripe.tasklyFee} MXN`} />
-            <Row label={`Procesamiento Stripe (${(STRIPE_RATE*100).toFixed(1)}% + $${STRIPE_FIXED_FEE} MXN)`} value={`+ $${stripe.processingFee} MXN`} />
+            <Row label="Precio acordado" value={`$${jobAmount} MXN`} />
+            {tip > 0 && <Row label="Propina (directa al trabajador)" value={`+ $${tip} MXN`} accent />}
+            <Row label="Comisión de procesamiento (tarjeta)" value={`+ $${stripe.processingFee} MXN`} />
+            <Text style={{ color: COLORS.muted, fontSize: 11, marginTop: 4, lineHeight: 15 }}>
+              Esta comisión la cobra Stripe (procesador de pagos) por los pagos con tarjeta. Taskly no te cobra comisión a ti.
+            </Text>
             <View style={{ height: 1, backgroundColor: COLORS.border, marginVertical: 8 }} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <Text style={{ color: COLORS.text, fontSize: 14, fontWeight: '700' }}>Total a pagar</Text>
@@ -2009,6 +3008,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
 
 // ✅ Workers inline list (not a modal, so taps work correctly)
 function WorkersInlineList({ onSelectWorker, favoriteIds = [], onToggleFavorite, previousWorkerIds = [], searchQuery = '' }) {
+  const C = useTheme();
   const [workers, setWorkers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -2070,11 +3070,11 @@ function WorkersInlineList({ onSelectWorker, favoriteIds = [], onToggleFavorite,
             return (
               <TouchableOpacity
                 key={chip.key}
-                style={[styles.filterChip, active && styles.filterChipActive, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
+                style={[styles.filterChip, { backgroundColor: C.card, borderColor: C.border }, active && styles.filterChipActive, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
                 onPress={() => setWorkerFilter(chip.key)}
               >
-                <Ionicons name={active ? chip.iconActive : chip.icon} size={14} color={active ? COLORS.accent : COLORS.muted} />
-                <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{chip.label}</Text>
+                <Ionicons name={active ? chip.iconActive : chip.icon} size={14} color={active ? COLORS.accent : C.muted} />
+                <Text style={[styles.filterChipText, { color: C.muted }, active && styles.filterChipTextActive]}>{chip.label}</Text>
               </TouchableOpacity>
             );
           })}
@@ -2222,6 +3222,138 @@ function ScheduleModal({ job, currentUser, otherUserId, chatId, onClose }) {
   );
 }
 
+// 📋 Quote Modal — worker sends a final quotation (or a new price) the client must accept
+function QuoteModal({ job, currentUser, otherUserId, chatId, onClose }) {
+  const C = useTheme();
+  const isRequote = job?.status === 'assigned';
+  const [amount, setAmount] = useState(isRequote && job?.assignedPrice ? String(job.assignedPrice) : '');
+  const [loading, setLoading] = useState(false);
+  // Hint the worker with their own estimate, but they can quote any amount.
+  const myBid = job?.bids?.find(b => b.userId === currentUser.id);
+  const estimateHint = myBid ? `Tu estimado: ${fmtEstimate(myBid.estMin ?? myBid.price, myBid.estMax)}` : 'Ej. 1,200';
+
+  const handleSend = async () => {
+    const value = parseInt(amount);
+    if (!value || value <= 0) { Alert.alert('Error', 'Ingresa un monto válido'); return; }
+    setLoading(true);
+    const label = `$${fmtMXN(value)} MXN`;
+    try {
+      // The quote lives entirely on the chat message (workers can create messages but
+      // not write arbitrary job fields). Its status is tracked on the message itself.
+      await addDoc(collection(db, 'messages'), {
+        chatId, senderId: currentUser.id, senderName: currentUser.name,
+        type: 'quote_proposal', amount: value,
+        workerId: currentUser.id, workerName: currentUser.name,
+        status: 'pending',
+        text: `📋 Cotización: ${label}`,
+        createdAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'chats', chatId), { lastMessage: `📋 Cotización: ${label}`, updatedAt: serverTimestamp() });
+      await createNotification(otherUserId, 'quote_received', currentUser.name, { amount: value, jobId: job.id, jobTitle: job.title });
+      Alert.alert('✓ Enviada', 'Tu cotización fue enviada. El cliente debe aceptarla.');
+      onClose();
+    } catch { Alert.alert('Error', 'No se pudo enviar la cotización'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {/* Tap the dimmed backdrop to dismiss the keyboard */}
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+          <View style={styles.scheduleOverlay}>
+            {/* Stop taps on the sheet itself from dismissing */}
+            <TouchableWithoutFeedback onPress={() => {}} accessible={false}>
+              <View style={[styles.scheduleContent, { backgroundColor: C.card }]}>
+                <Text style={[styles.scheduleTitle, { color: C.text }]}>📋 {isRequote ? 'Actualizar precio' : 'Enviar cotización final'}</Text>
+                <Text style={[styles.scheduleSubtitle, { color: C.muted }]}>{job.title}</Text>
+
+                <Text style={[styles.formLabel, { marginTop: 8 }]}>MONTO (MXN)</Text>
+                <TextInput
+                  style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border }]}
+                  value={amount}
+                  onChangeText={setAmount}
+                  placeholder={estimateHint}
+                  placeholderTextColor={C.muted}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                  onSubmitEditing={Keyboard.dismiss}
+                  autoFocus
+                />
+
+                <Text style={[styles.formHint, { marginTop: 4 }]}>
+                  💡 El cliente debe aceptar este precio. {isRequote ? 'Podrás ajustarlo de nuevo si es necesario.' : 'Al aceptar, quedarás contratado para este trabajo.'}
+                </Text>
+
+                <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
+                  <TouchableOpacity style={[styles.primaryButton, { flex: 1, backgroundColor: COLORS.border }]} onPress={() => { Keyboard.dismiss(); onClose(); }}>
+                    <Text style={styles.primaryButtonText}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.primaryButton, { flex: 1 }, loading && { opacity: 0.6 }]}
+                    onPress={handleSend} disabled={loading}>
+                    {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{isRequote ? 'Enviar' : 'Cotizar'}</Text>}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// Long-press quick actions for a job listing — actions adapt to status & ownership
+function JobActionSheet({ job, user, onClose, onOpenDetails, onChat, onEdit, onDelete }) {
+  const C = useTheme();
+  // Short, subtle vibration as the menu appears
+  useEffect(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  }, []);
+  if (!job) return null;
+  const isOwner = job.userId === user.id;
+  const isCompleted = job.status === 'completed';
+  const isOpen = job.status === 'open';
+  const canChat = job.status === 'assigned'
+    || (isOwner && (job.bids?.length > 0))
+    || (!isOwner && job.status !== 'completed');
+
+  const actions = [{ icon: 'open-outline', label: 'Ver detalles', onPress: onOpenDetails }];
+  if (!isCompleted && canChat && onChat) actions.push({ icon: 'chatbubbles-outline', label: 'Abrir chat', onPress: onChat });
+  if (isOwner && isOpen && onEdit) actions.push({ icon: 'create-outline', label: 'Editar', onPress: onEdit });
+  if (isOwner && onDelete) actions.push({ icon: 'trash-outline', label: isCompleted ? 'Eliminar registro' : 'Eliminar', danger: true, onPress: onDelete });
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={styles.actionSheetOverlay}>
+          <TouchableWithoutFeedback onPress={() => {}}>
+            <View style={[styles.actionSheet, { backgroundColor: C.card, borderColor: C.border }]}>
+              <View style={[styles.actionSheetHandle, { backgroundColor: C.border }]} />
+              <Text style={[styles.actionSheetTitle, { color: C.text }]} numberOfLines={1}>{job.title}</Text>
+              <Text style={[styles.actionSheetSubtitle, { color: C.muted }]}>{jobPriceLabel(job)}</Text>
+              {actions.map((a, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={[styles.actionSheetRow, { borderTopColor: C.border }]}
+                  // Close first, then run the action so a follow-up modal opens cleanly
+                  onPress={() => { onClose(); setTimeout(() => a.onPress(job), 130); }}
+                >
+                  <Ionicons name={a.icon} size={20} color={a.danger ? COLORS.red : C.text} />
+                  <Text style={[styles.actionSheetRowText, { color: a.danger ? COLORS.red : C.text }]}>{a.label}</Text>
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity style={[styles.actionSheetCancel, { borderColor: C.border }]} onPress={onClose}>
+                <Text style={[styles.actionSheetCancelText, { color: C.muted }]}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+}
+
 // Calendar add helper
 const addToCalendar = (title, dateStr, timeStr, address) => {
   try {
@@ -2239,13 +3371,11 @@ const addToCalendar = (title, dateStr, timeStr, address) => {
 
 // Post Job Screen (with image upload and location picker)
 function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }) {
+  const C = useTheme();
   const [type, setType] = useState(editingJob?.type || '');
   const [title, setTitle] = useState(editingJob?.title || '');
   const [description, setDescription] = useState(editingJob?.description || '');
   const [location, setLocation] = useState(editingJob?.estimatedLocation?.area || '');
-  const [budgetMin, setBudgetMin] = useState(editingJob?.budgetMin?.toString() || '');
-  const [budgetMax, setBudgetMax] = useState(editingJob?.budgetMax?.toString() || '');
-  const [isPublic, setIsPublic] = useState(editingJob?.isPublic !== false);
   const [isUrgent, setIsUrgent] = useState(editingJob?.isUrgent || false);
   const [paymentMethod, setPaymentMethod] = useState(editingJob?.paymentMethod || 'card');
   const [mediaItems, setMediaItems] = useState(() => {
@@ -2299,18 +3429,13 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
   };
 
   const handleSubmit = async () => {
-    if (!type || !title || !description || !location || !budgetMin || !budgetMax) {
+    if (!type || !title || !description || !location) {
       Alert.alert('Error', 'Completa todos los campos');
       return;
     }
 
     if (!checkModeration(title) || !checkModeration(description)) {
       Alert.alert('Contenido no permitido', 'Por favor revisa el título y descripción. No se permite contenido inapropiado.');
-      return;
-    }
-
-    if (parseInt(budgetMin) >= parseInt(budgetMax)) {
-      Alert.alert('Error', 'El presupuesto máximo debe ser mayor que el mínimo');
       return;
     }
 
@@ -2350,9 +3475,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
         type,
         title,
         description,
-        budgetMin: parseInt(budgetMin),
-        budgetMax: parseInt(budgetMax),
-        isPublic,
+        isPublic: true, // jobs are always visible to workers; worker drives the price
         isUrgent: urgentJob,
         paymentMethod,
         imageUrl: uploadedImages[0]?.url || null,
@@ -2405,14 +3528,14 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
 
   return (
     <Modal visible={true} animationType="slide">
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        
-        <View style={styles.modalHeader}>
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeButton}>← Cancelar</Text>
           </TouchableOpacity>
-          <Text style={styles.modalTitle}>{isEditing ? 'Editar trabajo' : 'Publicar trabajo'}</Text>
+          <Text style={[styles.modalTitle, { color: C.text }]}>{isEditing ? 'Editar trabajo' : 'Publicar trabajo'}</Text>
           <View style={{ width: 80 }} />
         </View>
 
@@ -2435,25 +3558,36 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
             {/* Multi-media picker */}
             <JobMediaPicker items={mediaItems} onChange={setMediaItems} />
 
-            {/* Privacy Toggle */}
-            <View style={styles.privacyContainer}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.privacyTitle}>
-                  {isPublic ? '🌐 Trabajo Público' : '🔒 Trabajo Privado'}
-                </Text>
-                <Text style={styles.privacySubtitle}>
-                  {isPublic 
-                    ? 'Otros clientes pueden ver este trabajo'
-                    : 'Solo trabajadores pueden verlo'}
-                </Text>
+            {/* Title */}
+            <Text style={styles.formLabel}>TÍTULO *</Text>
+            <TextInput
+              style={[styles.input, { borderColor: C.border, color: C.text }]}
+              value={title}
+              onChangeText={handleTitleChange}
+              placeholder="Ej: Fuga de agua en baño"
+              placeholderTextColor={C.muted}
+            />
+            {titleSuggestions.length > 0 && (
+              <View style={[styles.suggestionsBox, { backgroundColor: C.card, borderColor: C.border }]}>
+                {titleSuggestions.map((s, i) => (
+                  <TouchableOpacity key={i} style={[styles.suggestionRow, { borderBottomColor: C.border }]} onPress={() => { setTitle(s); setTitleSuggestions([]); }}>
+                    <Text style={[styles.suggestionText, { color: C.text }]}>🔍 {s}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
-              <Switch
-                value={isPublic}
-                onValueChange={setIsPublic}
-                trackColor={{ false: COLORS.border, true: COLORS.green }}
-                thumbColor={isPublic ? COLORS.green : COLORS.muted}
-              />
-            </View>
+            )}
+
+            {/* Description */}
+            <Text style={styles.formLabel}>DESCRIPCIÓN *</Text>
+            <TextInput
+              style={[styles.input, styles.textArea, { borderColor: C.border, color: C.text }]}
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Describe el problema..."
+              placeholderTextColor={C.muted}
+              multiline
+              numberOfLines={4}
+            />
 
             {/* Payment method selector */}
             {!isEditing && (
@@ -2469,13 +3603,13 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                       style={{
                         flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12,
                         borderRadius: 10, borderWidth: 2,
-                        borderColor: paymentMethod === opt.value ? COLORS.accent : COLORS.border,
-                        backgroundColor: paymentMethod === opt.value ? COLORS.accent + '15' : COLORS.card,
+                        borderColor: paymentMethod === opt.value ? COLORS.accent : C.border,
+                        backgroundColor: paymentMethod === opt.value ? COLORS.accent + '15' : C.card,
                       }}
                       onPress={() => setPaymentMethod(opt.value)}
                     >
-                      <Ionicons name={opt.icon} size={18} color={paymentMethod === opt.value ? COLORS.accent : COLORS.muted} />
-                      <Text style={{ fontSize: 12, fontWeight: '600', color: paymentMethod === opt.value ? COLORS.accent : COLORS.muted, flexShrink: 1 }}>
+                      <Ionicons name={opt.icon} size={18} color={paymentMethod === opt.value ? COLORS.accent : C.muted} />
+                      <Text style={{ fontSize: 12, fontWeight: '600', color: paymentMethod === opt.value ? COLORS.accent : C.muted, flexShrink: 1 }}>
                         {opt.label}
                       </Text>
                     </TouchableOpacity>
@@ -2488,7 +3622,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
             {paymentMethod === 'card' && (
               <View style={{ backgroundColor: COLORS.accent + '12', borderRadius: 10, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: COLORS.accent + '30' }}>
                 <Text style={{ color: COLORS.accent, fontSize: 12, fontWeight: '700', marginBottom: 2 }}>💳 Nota sobre pagos con tarjeta</Text>
-                <Text style={{ color: COLORS.muted, fontSize: 12, lineHeight: 17 }}>
+                <Text style={{ color: C.muted, fontSize: 12, lineHeight: 17 }}>
                   Stripe cobra {(STRIPE_RATE * 100).toFixed(1)}% + ${STRIPE_FIXED_FEE} MXN fijos por transacción al cliente. Taskly cobra {(TASKLY_RATE * 100).toFixed(1)}% al trabajador. Ambos ven el desglose exacto antes de confirmar.
                 </Text>
               </View>
@@ -2528,18 +3662,19 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                   key={service.id}
                   style={[
                     styles.serviceButton,
-                    type === service.id && { 
+                    { backgroundColor: C.card, borderColor: C.border },
+                    type === service.id && {
                       backgroundColor: service.color + '22',
-                      borderColor: service.color 
+                      borderColor: service.color
                     }
                   ]}
                   onPress={() => setType(service.id)}
                 >
                   <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name={service.icon} size={28} color={type === service.id ? service.color : COLORS.muted} />
+                    <Ionicons name={service.icon} size={28} color={type === service.id ? service.color : C.muted} />
                   </View>
                   <Text
-                    style={[styles.serviceButtonText, type === service.id && { color: service.color }]}
+                    style={[styles.serviceButtonText, { color: C.text }, type === service.id && { color: service.color }]}
                     numberOfLines={1}
                     adjustsFontSizeToFit
                     minimumFontScale={0.7}
@@ -2549,35 +3684,6 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                 </TouchableOpacity>
               ))}
             </View>
-
-            <Text style={styles.formLabel}>TÍTULO *</Text>
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={handleTitleChange}
-              placeholder="Ej: Fuga de agua en baño"
-              placeholderTextColor={COLORS.muted}
-            />
-            {titleSuggestions.length > 0 && (
-              <View style={styles.suggestionsBox}>
-                {titleSuggestions.map((s, i) => (
-                  <TouchableOpacity key={i} style={styles.suggestionRow} onPress={() => { setTitle(s); setTitleSuggestions([]); }}>
-                    <Text style={styles.suggestionText}>🔍 {s}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            <Text style={styles.formLabel}>DESCRIPCIÓN *</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Describe el problema..."
-              placeholderTextColor={COLORS.muted}
-              multiline
-              numberOfLines={4}
-            />
 
             <Text style={styles.formLabel}>UBICACIÓN (ÁREA GENERAL) *</Text>
             <Text style={styles.formHint}>
@@ -2591,9 +3697,9 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     {savedLocations.map(sl => (
                       <TouchableOpacity key={sl.id} onPress={() => setLocation(sl.area)}
-                        style={[styles.savedLocChip, location === sl.area && styles.savedLocChipActive]}>
-                        <Ionicons name="location-outline" size={14} color={location === sl.area ? COLORS.accent : COLORS.muted} />
-                        <Text style={[styles.savedLocLabel, location === sl.area && { color: COLORS.accent }]}>{sl.label}</Text>
+                        style={[styles.savedLocChip, { backgroundColor: C.card, borderColor: C.border }, location === sl.area && styles.savedLocChipActive]}>
+                        <Ionicons name="location-outline" size={14} color={location === sl.area ? COLORS.accent : C.muted} />
+                        <Text style={[styles.savedLocLabel, { color: C.text }, location === sl.area && { color: COLORS.accent }]}>{sl.label}</Text>
                         <TouchableOpacity onPress={() => handleDeleteSavedLocation(sl.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                           <Ionicons name="close" size={13} color={COLORS.muted} />
                         </TouchableOpacity>
@@ -2610,12 +3716,14 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                   key={loc.name}
                   style={[
                     styles.locationButton,
+                    { backgroundColor: C.card, borderColor: C.border },
                     location === loc.name && styles.locationButtonActive
                   ]}
                   onPress={() => setLocation(loc.name)}
                 >
                   <Text style={[
                     styles.locationButtonText,
+                    { color: C.muted },
                     location === loc.name && styles.locationButtonTextActive
                   ]}>
                     {loc.name}
@@ -2624,43 +3732,23 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
               ))}
             </View>
 
-            <Text style={styles.formLabel}>PRESUPUESTO (MXN) *</Text>
-            <View style={styles.budgetRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.budgetLabel}>Mínimo</Text>
-                <TextInput
-                  style={styles.input}
-                  value={budgetMin}
-                  onChangeText={setBudgetMin}
-                  placeholder="300"
-                  placeholderTextColor={COLORS.muted}
-                  keyboardType="numeric"
-                />
-              </View>
-              <Text style={styles.budgetSeparator}>-</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.budgetLabel}>Máximo</Text>
-                <TextInput
-                  style={styles.input}
-                  value={budgetMax}
-                  onChangeText={setBudgetMax}
-                  placeholder="500"
-                  placeholderTextColor={COLORS.muted}
-                  keyboardType="numeric"
-                />
-              </View>
+            {/* Estimate notice — price is set by the worker, then finalized in chat */}
+            <View style={[styles.infoBox, { borderColor: COLORS.accent + '44', backgroundColor: COLORS.accent + '0E' }]}>
+              <Text style={[styles.infoText, { color: C.text }]}>
+                💬 No necesitas fijar un precio. Los trabajadores te darán un estimado y podrás acordar la cotización final por chat.
+              </Text>
             </View>
 
             {/* Preferred date */}
             <Text style={styles.formLabel}>FECHA PREFERIDA (OPCIONAL)</Text>
             <TouchableOpacity
-              style={[styles.input, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
+              style={[styles.input, { borderColor: C.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}
               onPress={() => {
                 setTempDate(preferredDate || new Date());
                 setShowDatePicker(true);
               }}
             >
-              <Text style={{ color: preferredDate ? COLORS.text : COLORS.muted, fontSize: 14 }}>
+              <Text style={{ color: preferredDate ? C.text : C.muted, fontSize: 14 }}>
                 {preferredDate
                   ? preferredDate.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
                   : 'Seleccionar fecha'}
@@ -2730,9 +3818,12 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
 }
 
 // Job Detail Modal (with location picker and client rating)
-function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorkerProfile }) {
+function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorkerProfile, onViewClientProfile }) {
   const C = useTheme();
-  const [bidPrice, setBidPrice] = useState('');
+  const [creatorProfile, setCreatorProfile] = useState(null);
+  const [assignedProfile, setAssignedProfile] = useState(null);
+  const [estMin, setEstMin] = useState('');
+  const [estMax, setEstMax] = useState('');
   const [bidMessage, setBidMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -2745,15 +3836,29 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   const [showDisputeForm, setShowDisputeForm] = useState(false);
   const [showBankingOnboarding, setShowBankingOnboarding] = useState(false);
   const [editingBidPrice, setEditingBidPrice] = useState(false);
-  const [newBidPrice, setNewBidPrice] = useState('');
+  const [newBidPrice, setNewBidPrice] = useState(''); // estimate min
+  const [newBidMax, setNewBidMax] = useState('');     // estimate max (optional)
   const [disputeReason, setDisputeReason] = useState('');
   const [disputeDesc, setDisputeDesc] = useState('');
   const [disputeLoading, setDisputeLoading] = useState(false);
 
   const [job, setJob] = useState(initialJob);
+  const [showRebook, setShowRebook] = useState(false);
   const [detailRefreshing, setDetailRefreshing] = useState(false);
   const [payoutStatus, setPayoutStatus] = useState(null);
   const [mediaViewerIdx, setMediaViewerIdx] = useState(null); // null = closed, number = open at index
+  const [exactLoc, setExactLoc] = useState(null); // exact address from the private subcollection
+
+  // Only the owner and the assigned worker may read the exact address (private subcollection)
+  useEffect(() => {
+    const canSee = job?.locationShared && (job.userId === user.id || job.assignedTo === user.id);
+    if (!canSee || !job?.id) { setExactLoc(null); return; }
+    return onSnapshot(
+      doc(db, 'jobs', job.id, 'private', 'location'),
+      snap => setExactLoc(snap.exists() ? snap.data() : (job.exactLocation || null)), // fallback for legacy jobs
+      () => setExactLoc(job.exactLocation || null)
+    );
+  }, [job?.id, job?.locationShared, job?.userId, job?.assignedTo]);
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'jobs', initialJob.id), snap => {
@@ -2762,19 +3867,34 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
     return unsub;
   }, [initialJob.id]);
 
+  // Profile photos for the client (creator) and assigned worker
+  useEffect(() => {
+    if (job.userId) {
+      getDoc(doc(db, 'users', job.userId)).then(s => s.exists() && setCreatorProfile({ id: s.id, ...s.data() })).catch(() => {});
+    }
+  }, [job.userId]);
+  useEffect(() => {
+    if (job.assignedTo) {
+      getDoc(doc(db, 'users', job.assignedTo)).then(s => s.exists() && setAssignedProfile({ id: s.id, ...s.data() })).catch(() => {});
+    } else {
+      setAssignedProfile(null);
+    }
+  }, [job.assignedTo]);
+
   const paymentTotal = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0);
 
-  // Auto-show payment modal when worker confirms and client already confirmed
+  // Auto-show the payment sheet to the client whenever payment is pending — on every open
+  // of the job (fresh mount) and the moment it becomes due. Cancelling won't re-pop it
+  // within the same view, but reopening the job will.
+  const paymentDue = isPaymentPending(job) && user.id === job.userId;
   useEffect(() => {
-    if (job.paymentRequested && user.id === job.userId && !showPayment && job.status === 'assigned') {
-      setShowPayment(true);
-    }
-  }, [job.paymentRequested]);
+    if (paymentDue && !showPayment) setShowPayment(true);
+  }, [paymentDue]);
 
   // Fetch real Stripe payout status when a card job is completed
   useEffect(() => {
     if (job.status === 'completed' && job.paymentMethod === 'card' && user.stripeAccountId) {
-      fetch(`${BACKEND_URL}/worker-payout-status/${user.stripeAccountId}`)
+      authedFetch(`${BACKEND_URL}/worker-payout-status/${user.stripeAccountId}`)
         .then(r => r.json())
         .then(data => { if (!data.error) setPayoutStatus(data); })
         .catch(() => {});
@@ -2789,7 +3909,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
       : job.completedAt;
     if (!refDate) return;
     const completedDate = refDate.toDate?.() ?? new Date(refDate);
-    const cutoffDays = job.paymentMethod === 'card' ? 20 : 30;
+    const cutoffDays = 30;
     const daysSince = (Date.now() - completedDate.getTime()) / 86400000;
     if (daysSince >= cutoffDays) {
       const paths = (job.images || []).map(i => i.path).filter(Boolean);
@@ -2799,16 +3919,19 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
     }
   }, [job.id, job.status, job.completedAt, job.paymentInitiatedAt, job.imagesDeleted]);
 
-  const finalizeCompletion = async (stripePaymentIntentId) => {
-    const total      = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0);
-    const commission = Math.round(total * 0.025 * 100) / 100;
-    const stripe     = calcStripeFees(job.assignedPrice || 0);
+  const finalizeCompletion = async (stripePaymentIntentId, tipAmount = 0) => {
+    const tip        = tipAmount || 0;
+    const total      = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0) + tip;
+    // Commission applies to the job amount only — the worker keeps 100% of the tip
+    const commission = Math.round((total - tip) * 0.025 * 100) / 100;
+    const stripe     = calcStripeFees((job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0), tip);
     try {
       // Set pending_payment while Stripe processes
       await updateDoc(doc(db, 'jobs', job.id), {
         status: 'pending_payment',
         paymentInitiatedAt: serverTimestamp(),
         paymentRequested: false,
+        ...(tip > 0 ? { tipAmount: tip } : {}),
         ...(stripePaymentIntentId ? { stripePaymentIntentId } : {}),
       });
       setShowPayment(false);
@@ -2830,16 +3953,14 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
       // If worker has no Stripe account, flag the job for deferred transfer
       if (stripePaymentIntentId && !workerHasStripe) {
-        const total     = (job.assignedPrice || 0) + (job.isUrgent ? URGENT_JOB_PRICE : 0);
-        const comm      = Math.round(total * 0.025 * 100) / 100;
         await updateDoc(doc(db, 'jobs', job.id), {
           pendingTransfer: true,
-          workerPortion: Math.round((total - comm) * 100) / 100,
+          workerPortion: Math.round((total - commission) * 100) / 100,
         });
       }
 
       // Send email receipts to both parties (non-blocking)
-      fetch(`${BACKEND_URL}/send-payment-emails`, {
+      authedFetch(`${BACKEND_URL}/send-payment-emails`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2873,6 +3994,8 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
       await updateDoc(doc(db, 'jobs', job.id), { status: 'completed', completedAt: serverTimestamp() });
       setShowRating(true);
       if (onRefresh) onRefresh();
+      // Paid & completed → free server space (media + chat), non-blocking
+      cleanupCompletedJobMedia(job);
     } catch {
       Alert.alert('Error', 'No se pudo completar el trabajo. Intenta de nuevo.');
     }
@@ -2920,10 +4043,17 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   };
 
   const handleBid = async () => {
-    if (!bidPrice) {
-      Alert.alert('Error', 'Ingresa tu propuesta de precio');
+    const min = parseInt(estMin);
+    const max = estMax ? parseInt(estMax) : null;
+    if (!min || min <= 0) {
+      Alert.alert('Error', 'Ingresa un estimado (mínimo). El máximo es opcional.');
       return;
     }
+    if (max != null && max < min) {
+      Alert.alert('Error', 'El máximo debe ser mayor o igual que el mínimo.');
+      return;
+    }
+    const estimateLabel = fmtEstimate(min, max);
     setLoading(true);
     try {
       const jobRef = doc(db, 'jobs', job.id);
@@ -2931,8 +4061,10 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
         userId: user.id,
         userEmail: user.email,
         userName: user.name,
-        price: parseInt(bidPrice),
-        message: bidMessage || `Puedo hacer este trabajo por $${bidPrice}`,
+        estMin: min,
+        estMax: max,
+        price: min, // legacy fallback for older readers
+        message: bidMessage || `Mi estimado para este trabajo es ${estimateLabel} MXN`,
         createdAt: new Date(),
         status: 'pending',
         hasStripeAccount: !!user.stripeAccountId,
@@ -2946,108 +4078,27 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
         job.userId,
         'new_bid',
         user.name,
-        { price: bidPrice, jobTitle: job.title, jobId: job.id }
+        { estimate: `${estimateLabel} MXN`, jobTitle: job.title, jobId: job.id }
       );
 
-      Alert.alert('✓ Enviado!', 'Tu propuesta fue enviada');
+      Alert.alert('✓ Enviado!', 'Tu estimado fue enviado. Puedes acordar la cotización final por chat.');
       onClose();
       if (onRefresh) onRefresh();
     } catch (error) {
-      console.error('Error submitting bid:', error);
-      Alert.alert('Error', 'No se pudo enviar la propuesta');
+      console.error('Error submitting estimate:', error);
+      Alert.alert('Error', 'No se pudo enviar el estimado');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAcceptBid = async (bid) => {
-    // For card jobs, block acceptance if the worker has no CLABE linked
-    if (job.paymentMethod === 'card') {
-      try {
-        const workerSnap = await getDoc(doc(db, 'users', bid.userId));
-        const hasStripe = workerSnap.exists() && !!workerSnap.data().stripeAccountId;
-        if (!hasStripe) {
-          Alert.alert(
-            'Trabajador sin cuenta bancaria',
-            `${bid.userName} aún no ha vinculado su CLABE en Taskly, por lo que no puede recibir pagos con tarjeta.\n\nPuedes:\n• Pedirle que configure su cuenta en Configuración → Cuenta bancaria\n• Acordar con él cambiar este trabajo a pago en efectivo`,
-            [{ text: 'Entendido' }]
-          );
-          return;
-        }
-      } catch {
-        Alert.alert(
-          'Sin conexión',
-          'No se pudo verificar la cuenta bancaria del trabajador. Revisa tu conexión e intenta de nuevo.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
-    }
-
-    const otherBidders = (job.bids || []).filter(b => b.userId !== bid.userId);
-    const chatNote = otherBidders.length > 0
-      ? '\n\nLos chats con los demás proponentes serán eliminados.'
-      : '';
-    Alert.alert(
-      'Confirmar selección de trabajador',
-      `¿Deseas contratar a ${bid.userName} para "${job.title}" por $${bid.price} MXN?\n\nUna vez aceptado, el precio queda acordado.${chatNote}`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Aceptar',
-          onPress: async () => {
-            try {
-              // Delete chats with non-accepted bidders for this job
-              if (otherBidders.length > 0) {
-                const otherIds = otherBidders.map(b => b.userId);
-                const chatsSnap = await getDocs(
-                  query(collection(db, 'chats'), where('jobId', '==', job.id))
-                );
-                for (const chatDoc of chatsSnap.docs) {
-                  const participants = chatDoc.data().participants || [];
-                  if (otherIds.some(id => participants.includes(id))) {
-                    const msgsSnap = await getDocs(
-                      query(collection(db, 'messages'), where('chatId', '==', chatDoc.id))
-                    );
-                    await Promise.all(msgsSnap.docs.map(m => deleteDoc(m.ref)));
-                    await deleteDoc(chatDoc.ref);
-                  }
-                }
-              }
-
-              const jobRef = doc(db, 'jobs', job.id);
-              await updateDoc(jobRef, {
-                status: 'assigned',
-                assignedTo: bid.userId,
-                assignedWorkerName: bid.userName,
-                assignedPrice: bid.price,
-              });
-
-              await createNotification(bid.userId, 'bid_accepted', user.name, { jobTitle: job.title, jobId: job.id });
-
-              for (const b of otherBidders) {
-                await createNotification(b.userId, 'bid_declined', user.name, { jobTitle: job.title, jobId: job.id });
-              }
-
-              Alert.alert('✓ Asignado!', `Trabajo asignado a ${bid.userName}`);
-              onClose();
-              if (onRefresh) onRefresh();
-            } catch (error) {
-              Alert.alert('Error', 'No se pudo asignar el trabajo');
-            }
-          }
-        }
-      ]
-    );
-  };
-
   const handleLocationConfirm = async (locationData) => {
     try {
       const jobRef = doc(db, 'jobs', job.id);
-      await updateDoc(jobRef, {
-        exactLocation: locationData,
-        locationShared: true,
-      });
+      // Exact address goes in a private subcollection readable only by the owner + assigned
+      // worker; the main job doc only carries the (non-sensitive) locationShared flag.
+      await setDoc(doc(db, 'jobs', job.id, 'private', 'location'), locationData);
+      await updateDoc(jobRef, { locationShared: true });
 
       await createNotification(
         job.assignedTo,
@@ -3085,7 +4136,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   const handleMarkComplete = async () => {
     Alert.alert(
       'Confirmar trabajo completado',
-      '¿Confirmas que el trabajo fue realizado satisfactoriamente?',
+      '¿Confirmas que el trabajo fue realizado satisfactoriamente?\n\n💡 Por tu seguridad, confirma y realiza el pago con el trabajador presente, en el sitio del trabajo.',
       [
         { text: 'No', style: 'cancel' },
         {
@@ -3099,6 +4150,9 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                 if (job.paymentMethod === 'cash') {
                   await finalizeCompletion();
                 } else {
+                  // Mark payment as due so the button shows "Pagar ahora" and the payment
+                  // sheet re-opens every time the client returns (until it's paid).
+                  await updateDoc(jobRef, { paymentRequested: true });
                   await handleOpenPayment();
                 }
               } else {
@@ -3127,7 +4181,13 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
               await updateDoc(doc(db, 'jobs', job.id), {
                 status: 'cancelled',
                 cancelledAt: serverTimestamp(),
+                deleteAtMs: Date.now() + JOB_DELETE_GRACE_MS,
               });
+              // Schedule chats for the same 30-day deletion
+              try {
+                const chatsSnap = await getDocs(query(collection(db, 'chats'), where('jobId', '==', job.id)));
+                await Promise.all(chatsSnap.docs.map(c => updateDoc(c.ref, { deleteAtMs: Date.now() + JOB_DELETE_GRACE_MS }).catch(() => {})));
+              } catch {}
               if (job.assignedTo) {
                 await createNotification(
                   job.assignedTo,
@@ -3150,7 +4210,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
   const handleWorkerMarkComplete = async () => {
     Alert.alert(
       'Finalizar trabajo',
-      '¿Confirmas que el trabajo fue completado? El cliente deberá confirmar antes de liberar el pago.',
+      '¿Confirmas que el trabajo fue completado? El cliente deberá confirmar antes de liberar el pago.\n\n💡 Por tu seguridad, pide que el pago se realice en el sitio, con el cliente presente, antes de retirarte.',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -3429,10 +4489,10 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
               <ServiceIcon type={job.type} size={56} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.jobDetailTitle, { color: C.text }]}>{job.title}</Text>
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={() => {
                     const canSeeExact = isMyJob || job.assignedTo === user.id;
-                    if (canSeeExact && job.locationShared && job.exactLocation) {
+                    if (canSeeExact && job.locationShared && exactLoc) {
                       setShowMap(true);
                     }
                   }}
@@ -3440,14 +4500,22 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   <Text style={styles.jobDetailLocation}>
                     {(() => {
                       const canSeeExact = isMyJob || job.assignedTo === user.id;
-                      return '📍 ' + (canSeeExact && job.locationShared && job.exactLocation
-                        ? job.exactLocation.address
+                      return '📍 ' + (canSeeExact && job.locationShared && exactLoc
+                        ? exactLoc.address
                         : job.estimatedLocation?.area || job.location);
                     })()}
                   </Text>
                 </TouchableOpacity>
                 {job.userName && (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}
+                    onPress={() => creatorProfile && onViewClientProfile?.(creatorProfile)}
+                  >
+                    {creatorProfile?.profileImage
+                      ? <Image source={{ uri: creatorProfile.profileImage }} style={{ width: 20, height: 20, borderRadius: 10 }} />
+                      : <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}>
+                          <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 10 }}>{job.userName[0]?.toUpperCase()}</Text>
+                        </View>}
                     <Text style={styles.jobDetailCreator}>Por: {job.userName}</Text>
                     {isWorker && job.clientRating > 0 && (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
@@ -3455,12 +4523,42 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                         <Text style={styles.clientRatingText}>{job.clientRating.toFixed(1)}</Text>
                       </View>
                     )}
-                  </View>
+                  </TouchableOpacity>
                 )}
               </View>
             </View>
 
-            <StatusBadge status={job.status} />
+            <View style={{ marginBottom: 14 }}>
+              <StatusBadge status={job.status} />
+            </View>
+
+            {/* 🛡 Garantía Taskly — shown to the client while money is in play */}
+            {isMyJob && job.paymentMethod !== 'cash' && (job.status === 'assigned' || job.status === 'pending_payment') && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: COLORS.green + '12', borderWidth: 1, borderColor: COLORS.green + '44', borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                <Ionicons name="shield-checkmark" size={22} color={COLORS.green} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 13 }}>Garantía Taskly</Text>
+                  <Text style={{ color: C.muted, fontSize: 11, lineHeight: 15 }}>
+                    Tu pago queda protegido en la plataforma. Si algo sale mal, abre una disputa dentro de las 72 horas y te ayudamos a resolverlo.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* 🔄 Volver a contratar — rebook the same worker in one tap */}
+            {isMyJob && job.status === 'completed' && assignedProfile && (
+              <TouchableOpacity
+                style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: COLORS.accent + '18', borderWidth: 1, borderColor: COLORS.accent, borderRadius: 12, padding: 12, marginBottom: 14 }}
+                onPress={() => setShowRebook(true)}
+              >
+                {assignedProfile.profileImage
+                  ? <Image source={{ uri: assignedProfile.profileImage }} style={{ width: 22, height: 22, borderRadius: 11 }} />
+                  : <Ionicons name="refresh-circle" size={22} color={COLORS.accent} />}
+                <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 14 }}>
+                  Volver a contratar a {job.assignedWorkerName}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {/* Sendoff banner for workers who bid but didn't get the job */}
             {isWorker && alreadyBid && job.assignedTo !== user.id && (job.status === 'assigned' || job.status === 'pending_payment' || job.status === 'completed') && (
@@ -3477,11 +4575,21 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
             {job.status === 'assigned' && job.assignedWorkerName && (
               <View style={styles.assignedBox}>
-                <Text style={styles.assignedText}>
-                  👷 Asignado a: {job.assignedWorkerName}
-                </Text>
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}
+                  onPress={() => onViewWorkerProfile?.(job.assignedTo)}
+                >
+                  {assignedProfile?.profileImage
+                    ? <Image source={{ uri: assignedProfile.profileImage }} style={{ width: 26, height: 26, borderRadius: 13 }} />
+                    : <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: COLORS.accent + '33', justifyContent: 'center', alignItems: 'center' }}>
+                        <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 12 }}>{job.assignedWorkerName[0]?.toUpperCase()}</Text>
+                      </View>}
+                  <Text style={[styles.assignedText, { marginBottom: 0, textDecorationLine: 'underline' }]}>
+                    Asignado a: {job.assignedWorkerName}
+                  </Text>
+                </TouchableOpacity>
                 <Text style={styles.assignedPrice}>
-                  Precio acordado: ${job.assignedPrice}
+                  Precio acordado: <PriceText value={job.assignedPrice} style={styles.assignedPrice} />
                 </Text>
 
                 {canManage && !job.locationShared && (
@@ -3493,14 +4601,14 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   </TouchableOpacity>
                 )}
 
-                {(isMyJob || job.assignedTo === user.id) && job.locationShared && job.exactLocation && (
-                  <View style={styles.inlineMapBox}>
-                    <Text style={styles.inlineMapAddress}>📍 {job.exactLocation.address}</Text>
+                {(isMyJob || job.assignedTo === user.id) && job.locationShared && exactLoc && (
+                  <View style={[styles.inlineMapBox, { backgroundColor: C.bg }]}>
+                    <Text style={[styles.inlineMapAddress, { color: C.text }]}>📍 {exactLoc.address}</Text>
                     <MapView
                       style={styles.inlineMapView}
                       initialRegion={{
-                        latitude: job.exactLocation.lat,
-                        longitude: job.exactLocation.lng,
+                        latitude: exactLoc.lat,
+                        longitude: exactLoc.lng,
                         latitudeDelta: 0.005,
                         longitudeDelta: 0.005,
                       }}
@@ -3510,19 +4618,19 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                       rotateEnabled={false}
                     >
                       <Marker
-                        coordinate={{ latitude: job.exactLocation.lat, longitude: job.exactLocation.lng }}
+                        coordinate={{ latitude: exactLoc.lat, longitude: exactLoc.lng }}
                       />
                     </MapView>
                     <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                       <TouchableOpacity style={[styles.mapActionBtn, { flex: 1 }]} onPress={() => {
-                        Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${job.exactLocation.lat},${job.exactLocation.lng}`);
+                        Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${exactLoc.lat},${exactLoc.lng}`);
                       }}>
                         <Text style={styles.mapActionBtnText}>🌐 Google Maps</Text>
                       </TouchableOpacity>
                       <TouchableOpacity style={[styles.mapActionBtn, { flex: 1, backgroundColor: COLORS.blue }]} onPress={() => {
                         const url = Platform.OS === 'ios'
-                          ? `maps:0,0?q=${job.exactLocation.lat},${job.exactLocation.lng}`
-                          : `geo:0,0?q=${job.exactLocation.lat},${job.exactLocation.lng}`;
+                          ? `maps:0,0?q=${exactLoc.lat},${exactLoc.lng}`
+                          : `geo:0,0?q=${exactLoc.lat},${exactLoc.lng}`;
                         Linking.openURL(url);
                       }}>
                         <Text style={styles.mapActionBtnText}>📱 Mapas</Text>
@@ -3595,6 +4703,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                 </View>
                 <PaymentTracker
                   job={job} payoutStatus={payoutStatus} isWorker={true}
+                  workerAccountId={user.stripeAccountId}
                   clientName={job.userName || ''}
                   workerName={user.name || ''}
                 />
@@ -3625,18 +4734,20 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
             <View style={[styles.infoGrid]}>
               <View style={[styles.infoItem, { backgroundColor: C.card, borderColor: C.border }]}>
-                <Text style={[styles.infoLabel, { color: C.muted }]}>PRESUPUESTO</Text>
-                <Text style={[styles.infoValue, { color: C.text }]}>${job.budgetMin}-${job.budgetMax}</Text>
+                <Text style={[styles.infoLabel, { color: C.muted }]}>PRECIO</Text>
+                {job.assignedPrice
+                  ? <PriceText value={job.assignedPrice} style={[styles.infoValue, { color: C.text }]} />
+                  : <Text style={[styles.infoValue, { color: C.text }]}>{jobPriceLabel(job)}</Text>}
               </View>
               <View style={[styles.infoItem, { backgroundColor: C.card, borderColor: C.border }]}>
-                <Text style={[styles.infoLabel, { color: C.muted }]}>PROPUESTAS</Text>
+                <Text style={[styles.infoLabel, { color: C.muted }]}>ESTIMADOS</Text>
                 <Text style={[styles.infoValue, { color: C.text }]}>{job.bids?.length || 0}</Text>
               </View>
             </View>
 
             {job.bids && job.bids.length > 0 && canManage && (
               <View style={[styles.bidsSection, { backgroundColor: C.card, borderColor: C.border }]}>
-                <Text style={[styles.sectionTitle, { color: C.text }]}>Propuestas recibidas</Text>
+                <Text style={[styles.sectionTitle, { color: C.text }]}>Estimados recibidos</Text>
                 {job.bids.map((bid, index) => {
                   const isAccepted = job.status !== 'open' && bid.userId === job.assignedTo;
                   const isRejected = job.status !== 'open' && bid.userId !== job.assignedTo;
@@ -3652,30 +4763,24 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                             <Text style={styles.bidViewProfile}>Ver perfil del trabajador →</Text>
                           </TouchableOpacity>
                         </View>
-                        <Text style={[styles.bidPrice, { textDecorationLine: isRejected ? 'line-through' : 'none', color: isRejected ? C.muted : COLORS.accent }]}>${bid.price}</Text>
+                        <Text style={[styles.bidPrice, { textDecorationLine: isRejected ? 'line-through' : 'none', color: isRejected ? C.muted : COLORS.accent }]}>
+                          {fmtEstimate(bid.estMin ?? bid.price, bid.estMax)}
+                        </Text>
                       </View>
                       <Text style={[styles.bidMessage, { color: C.muted }]}>{bid.message}</Text>
 
                       {job.status === 'open' && (
-                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                        <View style={{ marginTop: 8 }}>
                           <TouchableOpacity
-                            style={[styles.chatButtonInline, { flex: 1 }]}
+                            style={[styles.chatButtonInline]}
                             onPress={() => openChat(bid.userId)}
                           >
-                            <Text style={styles.chatButtonText}>💬 Chatear</Text>
+                            <Text style={styles.chatButtonText}>💬 Chatear para acordar cotización</Text>
                           </TouchableOpacity>
-                          {job.paymentMethod === 'card' && !bid.hasStripeAccount ? (
-                            <View style={{ flex: 1, backgroundColor: C.border, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' }}>
-                              <Ionicons name="card-outline" size={13} color={C.muted} />
-                              <Text style={{ color: C.muted, fontSize: 10, fontWeight: '600', textAlign: 'center', marginTop: 2 }}>Sin cuenta{'\n'}bancaria</Text>
-                            </View>
-                          ) : (
-                            <TouchableOpacity
-                              style={[styles.acceptButton, { flex: 1, marginTop: 0 }]}
-                              onPress={() => handleAcceptBid(bid)}
-                            >
-                              <Text style={styles.acceptButtonText}>✓ Aceptar</Text>
-                            </TouchableOpacity>
+                          {job.paymentMethod === 'card' && !bid.hasStripeAccount && (
+                            <Text style={{ color: C.muted, fontSize: 11, marginTop: 6, textAlign: 'center' }}>
+                              ⚠️ Este trabajador aún no tiene cuenta bancaria para cobros con tarjeta.
+                            </Text>
                           )}
                         </View>
                       )}
@@ -3700,17 +4805,37 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
             {canBid && (
               <View style={[styles.bidFormSection, { backgroundColor: C.card, borderColor: C.border }]}>
-                <Text style={[styles.sectionTitle, { color: C.text }]}>Hacer una propuesta</Text>
+                <Text style={[styles.sectionTitle, { color: C.text }]}>Dar un estimado</Text>
+                <Text style={[styles.formHint, { marginTop: -4 }]}>
+                  Da un estimado aproximado. La cotización final la acuerdas con el cliente por chat.
+                </Text>
 
-                <Text style={[styles.formLabel, { color: C.muted }]}>TU PRECIO (MXN)</Text>
-                <TextInput
-                  style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border }]}
-                  value={bidPrice}
-                  onChangeText={setBidPrice}
-                  placeholder={`Entre $${job.budgetMin} y $${job.budgetMax}`}
-                  placeholderTextColor={C.muted}
-                  keyboardType="numeric"
-                />
+                <Text style={[styles.formLabel, { color: C.muted }]}>ESTIMADO (MXN)</Text>
+                <View style={styles.budgetRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.budgetLabel}>Mínimo *</Text>
+                    <TextInput
+                      style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border }]}
+                      value={estMin}
+                      onChangeText={setEstMin}
+                      placeholder="800"
+                      placeholderTextColor={C.muted}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <Text style={styles.budgetSeparator}>-</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.budgetLabel}>Máximo (opcional)</Text>
+                    <TextInput
+                      style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border }]}
+                      value={estMax}
+                      onChangeText={setEstMax}
+                      placeholder="1,500"
+                      placeholderTextColor={C.muted}
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
 
                 <Text style={[styles.formLabel, { color: C.muted }]}>MENSAJE (OPCIONAL)</Text>
                 <TextInput
@@ -3723,7 +4848,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   numberOfLines={3}
                 />
 
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.primaryButton, loading && { opacity: 0.6 }]}
                   onPress={handleBid}
                   disabled={loading}
@@ -3731,7 +4856,7 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                   {loading ? (
                     <ActivityIndicator color="#fff" />
                   ) : (
-                    <Text style={styles.primaryButtonText}>Enviar propuesta →</Text>
+                    <Text style={styles.primaryButtonText}>Enviar estimado →</Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -3739,6 +4864,12 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
             {canManage && job.status === 'assigned' && (
               <>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: COLORS.yellow + '14', borderWidth: 1, borderColor: COLORS.yellow + '40', borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={COLORS.yellow} style={{ marginTop: 1 }} />
+                  <Text style={{ color: C.muted, fontSize: 11, lineHeight: 15, flex: 1 }}>
+                    Por seguridad, confirma y realiza el pago <Text style={{ fontWeight: '800', color: C.text }}>en el sitio, con el trabajador presente</Text>. Evita confirmar a distancia.
+                  </Text>
+                </View>
                 {job.paymentMethod === 'card' && job.assignedPrice && (
                   <View style={{ padding: 12, backgroundColor: COLORS.accent + '15', borderRadius: 10, marginBottom: 8, borderWidth: 1, borderColor: COLORS.accent + '40' }}>
                     <Text style={{ color: COLORS.accent, fontWeight: '700', fontSize: 13, textAlign: 'center' }}>
@@ -3747,12 +4878,12 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
                     </Text>
                   </View>
                 )}
-                {job.paymentRequested ? (
+                {isPaymentPending(job) ? (
                   <TouchableOpacity
                     style={[styles.completeButton, { backgroundColor: COLORS.green, borderColor: COLORS.green }]}
                     onPress={handleOpenPayment}
                   >
-                    <Text style={[styles.completeButtonText, { color: '#fff' }]}>💳 Pagar ahora — ${paymentTotal} MXN</Text>
+                    <Text style={[styles.completeButtonText, { color: '#fff' }]}>💳 Pagar ahora</Text>
                   </TouchableOpacity>
                 ) : job.clientConfirmed ? (
                   <View style={[styles.completeButton, { backgroundColor: COLORS.green + '15', borderColor: COLORS.green }]}>
@@ -3782,60 +4913,81 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
               <View style={[styles.alreadyBidBox, { padding: 14 }]}>
                 {editingBidPrice ? (
                   <View style={{ gap: 8 }}>
-                    <Text style={[styles.alreadyBidText, { marginBottom: 4 }]}>Actualizar precio de propuesta</Text>
-                    <TextInput
-                      style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border, marginBottom: 0 }]}
-                      value={newBidPrice}
-                      onChangeText={setNewBidPrice}
-                      placeholder={`Precio actual: $${myBid?.price}`}
-                      placeholderTextColor={C.muted}
-                      keyboardType="numeric"
-                      autoFocus
-                    />
+                    <Text style={[styles.alreadyBidText, { marginBottom: 4 }]}>Actualizar estimado</Text>
+                    <View style={styles.budgetRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.budgetLabel}>Mínimo *</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border, marginBottom: 0 }]}
+                          value={newBidPrice}
+                          onChangeText={setNewBidPrice}
+                          placeholder="800"
+                          placeholderTextColor={C.muted}
+                          keyboardType="numeric"
+                          autoFocus
+                        />
+                      </View>
+                      <Text style={styles.budgetSeparator}>-</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.budgetLabel}>Máximo (opcional)</Text>
+                        <TextInput
+                          style={[styles.input, { backgroundColor: C.bg, color: C.text, borderColor: C.border, marginBottom: 0 }]}
+                          value={newBidMax}
+                          onChangeText={setNewBidMax}
+                          placeholder="1,500"
+                          placeholderTextColor={C.muted}
+                          keyboardType="numeric"
+                        />
+                      </View>
+                    </View>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <TouchableOpacity
                         style={{ flex: 1, backgroundColor: C.border, borderRadius: 8, padding: 10, alignItems: 'center' }}
-                        onPress={() => { setEditingBidPrice(false); setNewBidPrice(''); }}
+                        onPress={() => { setEditingBidPrice(false); setNewBidPrice(''); setNewBidMax(''); }}
                       >
                         <Text style={{ color: C.muted, fontWeight: '600', fontSize: 13 }}>Cancelar</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={{ flex: 2, backgroundColor: COLORS.accent, borderRadius: 8, padding: 10, alignItems: 'center' }}
                         onPress={async () => {
-                          const parsed = parseInt(newBidPrice);
-                          if (!parsed || parsed <= 0) { Alert.alert('Error', 'Ingresa un precio válido'); return; }
+                          const min = parseInt(newBidPrice);
+                          const max = newBidMax ? parseInt(newBidMax) : null;
+                          if (!min || min <= 0) { Alert.alert('Error', 'Ingresa un estimado válido'); return; }
+                          if (max != null && max < min) { Alert.alert('Error', 'El máximo debe ser mayor o igual que el mínimo'); return; }
+                          const label = fmtEstimate(min, max);
                           try {
                             const jobRef = doc(db, 'jobs', job.id);
                             const snap = await getDoc(jobRef);
                             const updatedBids = (snap.data().bids || []).map(b =>
-                              b.userId === user.id ? { ...b, price: parsed } : b
+                              b.userId === user.id ? { ...b, estMin: min, estMax: max, price: min } : b
                             );
                             await updateDoc(jobRef, { bids: updatedBids });
-                            // Send price-update system message to chat with job owner
+                            // Send estimate-update system message to chat with job owner
                             const chatIdForMsg = await getOrCreateChat(user.id, job.userId, job.id);
                             await addDoc(collection(db, 'messages'), {
                               chatId: chatIdForMsg,
                               senderId: 'system',
                               senderName: 'Sistema',
-                              text: `💰 ${user.name} actualizó su propuesta a $${parsed} MXN`,
+                              text: `💰 ${user.name} actualizó su estimado a ${label} MXN`,
                               type: 'price_update',
                               createdAt: serverTimestamp(),
                             });
                             setEditingBidPrice(false);
                             setNewBidPrice('');
-                          } catch { Alert.alert('Error', 'No se pudo actualizar el precio'); }
+                            setNewBidMax('');
+                          } catch { Alert.alert('Error', 'No se pudo actualizar el estimado'); }
                         }}
                       >
-                        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Confirmar nuevo precio</Text>
+                        <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>Confirmar estimado</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
                 ) : (
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={styles.alreadyBidText}>✓ Tu propuesta: ${myBid?.price} MXN</Text>
+                    <Text style={styles.alreadyBidText}>✓ Tu estimado: {fmtEstimate(myBid?.estMin ?? myBid?.price, myBid?.estMax)} MXN</Text>
                     {job.status === 'open' && (
                       <TouchableOpacity
-                        onPress={() => { setEditingBidPrice(true); setNewBidPrice(String(myBid?.price || '')); }}
+                        onPress={() => { setEditingBidPrice(true); setNewBidPrice(String(myBid?.estMin ?? myBid?.price ?? '')); setNewBidMax(myBid?.estMax != null ? String(myBid.estMax) : ''); }}
                         style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.accent + '22', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 }}
                       >
                         <Ionicons name="pencil-outline" size={13} color={COLORS.accent} />
@@ -3849,6 +5001,12 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
 
             {isWorker && job.assignedTo === user.id && job.status === 'assigned' && (
               <>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: COLORS.yellow + '14', borderWidth: 1, borderColor: COLORS.yellow + '40', borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={COLORS.yellow} style={{ marginTop: 1 }} />
+                  <Text style={{ color: C.muted, fontSize: 11, lineHeight: 15, flex: 1 }}>
+                    Por seguridad, pide que el pago se realice <Text style={{ fontWeight: '800', color: C.text }}>en el sitio, con el cliente presente</Text>, antes de retirarte.
+                  </Text>
+                </View>
                 {job.workerConfirmed ? (
                   <View style={[styles.completeButton, { backgroundColor: COLORS.green + '15', borderColor: COLORS.green }]}>
                     <Text style={[styles.completeButtonText, { color: COLORS.green }]}>✓ Finalizado — esperando confirmación del cliente</Text>
@@ -3995,6 +5153,14 @@ function JobDetailModal({ job: initialJob, user, onClose, onRefresh, onViewWorke
           />
         )}
 
+        {showRebook && (
+          <PostJobScreen
+            user={user}
+            targetWorker={assignedProfile}
+            onClose={() => setShowRebook(false)}
+          />
+        )}
+
         {showPayment && (
           <PaymentModal
             amount={paymentTotal}
@@ -4085,7 +5251,7 @@ function ProposeExistingJobModal({ worker, client, onClose }) {
                 <ServiceIcon type={item.type} size={44} />
                 <View style={{ flex: 1, marginLeft: 12 }}>
                   <Text style={styles.bidUserName}>{item.title}</Text>
-                  <Text style={styles.jobLocation}>💰 ${item.budgetMin}–${item.budgetMax}</Text>
+                  <Text style={styles.jobLocation}>💰 {jobPriceLabel(item)}</Text>
                 </View>
                 <TouchableOpacity
                   style={[styles.acceptButton, { paddingHorizontal: 14 }, sending === item.id && { opacity: 0.5 }]}
@@ -4190,13 +5356,89 @@ function WorkerAreaPreview({ worker }) {
   );
 }
 
+// Lightweight public profile for clients (workers check who they're working with)
+function ClientProfileModal({ client, onClose }) {
+  const C = useTheme();
+  const [reviews, setReviews] = useState(null);
+
+  useEffect(() => {
+    getDocs(query(collection(db, 'clientRatings'), where('clientId', '==', client.id)))
+      .then(s => {
+        const rows = s.docs.map(d => ({ id: d.id, ...d.data() }));
+        rows.sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0));
+        setReviews(rows);
+      })
+      .catch(() => setReviews([]));
+  }, [client.id]);
+
+  const avg = reviews?.length ? reviews.reduce((s, r) => s + (r.rating || 0), 0) / reviews.length : (client.clientRating || 0);
+
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cerrar</Text></TouchableOpacity>
+          <Text style={[styles.modalTitle, { color: C.text }]}>Perfil de cliente</Text>
+          <View style={{ width: 80 }} />
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 20 }}>
+          <View style={{ alignItems: 'center', marginBottom: 20 }}>
+            {client.profileImage
+              ? <Image source={{ uri: client.profileImage }} style={{ width: 90, height: 90, borderRadius: 45 }} />
+              : <View style={{ width: 90, height: 90, borderRadius: 45, backgroundColor: COLORS.accent + '22', justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 34 }}>{client.name?.[0]?.toUpperCase() || '?'}</Text>
+                </View>}
+            <Text style={{ color: C.text, fontSize: 22, fontWeight: '800', marginTop: 12 }}>{client.name}</Text>
+            <Text style={{ color: C.muted, fontSize: 13, marginTop: 2 }}>Cliente</Text>
+            {avg > 0 && (
+              <View style={{ alignItems: 'center', marginTop: 10 }}>
+                <StarRating rating={Math.round(avg)} size={22} />
+                <Text style={{ color: C.muted, fontSize: 12, marginTop: 4 }}>
+                  {avg.toFixed(1)} · {reviews?.length || client.clientRatedCount || 0} reseña{(reviews?.length || 0) !== 1 ? 's' : ''} de trabajadores
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={styles.formLabel}>RESEÑAS DE TRABAJADORES</Text>
+          {reviews === null ? (
+            <ActivityIndicator color={COLORS.accent} style={{ marginTop: 20 }} />
+          ) : reviews.length === 0 ? (
+            <Text style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>Este cliente aún no tiene reseñas.</Text>
+          ) : reviews.map(r => (
+            <View key={r.id} style={{ backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 12, padding: 14, marginBottom: 10 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <StarRating rating={r.rating || 0} size={14} />
+                <Text style={{ color: C.muted, fontSize: 11 }}>
+                  {r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString('es-MX') : ''}
+                </Text>
+              </View>
+              {r.review ? <Text style={{ color: C.text, fontSize: 13 }}>{r.review}</Text> : <Text style={{ color: C.muted, fontSize: 12 }}>Sin comentario</Text>}
+            </View>
+          ))}
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
 function WorkerProfileModal({ worker, currentUser, onClose, favoriteIds = [], onToggleFavorite }) {
   const [ratings, setRatings] = useState([]);
   const [hiddenIds, setHiddenIds] = useState(new Set(worker.hiddenRatings || []));
   const [loading, setLoading] = useState(true);
+  const [workerBusiness, setWorkerBusiness] = useState(null);
   const isOwnProfile = currentUser.id === worker.id;
 
   useEffect(() => { loadRatings(); }, []);
+
+  // Load the registered company this worker belongs to (if any)
+  useEffect(() => {
+    if (!worker.businessId) return;
+    getDoc(doc(db, 'businesses', worker.businessId)).then(snap => {
+      if (snap.exists()) setWorkerBusiness({ id: snap.id, ...snap.data() });
+    }).catch(() => {});
+  }, [worker.businessId]);
 
   const loadRatings = async () => {
     try {
@@ -4277,6 +5519,19 @@ function WorkerProfileModal({ worker, currentUser, onClose, favoriteIds = [], on
               </View>
             )}
             {worker.bio && <Text style={styles.workerProfileBio}>{worker.bio}</Text>}
+
+            {/* Registered company indicator */}
+            {workerBusiness && workerBusiness.verificationStatus === 'verified' && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, backgroundColor: COLORS.blue + '15', borderWidth: 1, borderColor: COLORS.blue + '44', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6 }}>
+                {workerBusiness.logo
+                  ? <Image source={{ uri: workerBusiness.logo }} style={{ width: 20, height: 20, borderRadius: 5 }} />
+                  : <Ionicons name="business" size={15} color={COLORS.blue} />}
+                <Text style={{ color: COLORS.blue, fontSize: 12, fontWeight: '700' }}>
+                  {worker.businessRole === 'owner' ? 'Dueño de' : 'Trabaja con'} {workerBusiness.name}
+                </Text>
+                <Ionicons name="checkmark-circle" size={14} color={COLORS.blue} />
+              </View>
+            )}
 
             <TrustBadges worker={worker} />
 
@@ -4487,6 +5742,236 @@ function SettingsRow({ icon, title, subtitle, rightElement, onPress, destructive
   return inner;
 }
 
+// ─── Help Center ──────────────────────────────────────────────────────────────
+const HELP_ARTICLES = [
+  { cat: '📋 Publicar y contratar', items: [
+    { q: '¿Cómo publico un trabajo?', a: 'Toca el botón "+ Publicar", elige el tipo de servicio, describe el problema con fotos, indica tu zona y presupuesto. Recibirás propuestas de trabajadores verificados.' },
+    { q: '¿Qué es un trabajo urgente?', a: `Por $${URGENT_JOB_PRICE} MXN extra tu trabajo aparece destacado al inicio del feed para recibir propuestas más rápido. Requiere pago con tarjeta.` },
+    { q: '¿Cómo elijo al trabajador?', a: 'Compara las propuestas: precio, calificaciones, reseñas y perfil. Puedes chatear con cada trabajador antes de aceptar. Al aceptar una propuesta, el trabajo queda asignado.' },
+    { q: '¿Puedo volver a contratar al mismo trabajador?', a: 'Sí. En el detalle de un trabajo completado verás el botón "Volver a contratar", que crea una propuesta directa para ese trabajador.' },
+  ]},
+  { cat: '💳 Pagos, comisiones y propinas', items: [
+    { q: '¿Cuánto cuesta usar Taskly?', a: 'Publicar es gratis. Pagando con tarjeta se agrega una comisión de servicio del 2.5% más el procesamiento del pago (3.6% + $3 MXN), desglosados antes de confirmar. En efectivo no hay comisión.' },
+    { q: '¿Cómo se protege mi pago?', a: 'Tu pago queda protegido en la plataforma y se libera al trabajador cuando ambas partes confirman que el trabajo fue completado. Esto es la Garantía Taskly.' },
+    { q: '¿Puedo dejar propina?', a: 'Sí. Al momento de pagar puedes agregar una propina de $20, $50 o $100 MXN. El 100% de la propina va al trabajador.' },
+    { q: '¿Cuándo recibe su dinero el trabajador?', a: 'Tras confirmarse el trabajo, Stripe procesa el pago y deposita en la cuenta bancaria del trabajador en 1-2 días hábiles. Los primeros pagos de una cuenta nueva pueden tardar ~7 días.' },
+  ]},
+  { cat: '🛡️ Garantía y disputas', items: [
+    { q: '¿Qué es la Garantía Taskly?', a: 'Si pagas con tarjeta, tu dinero queda protegido en la plataforma hasta que confirmes que el trabajo se completó. Si algo sale mal, abre una disputa y te ayudamos a resolverlo.' },
+    { q: '¿Cómo abro una disputa?', a: 'En el detalle del trabajo completado, toca "Reportar un problema" dentro de las 72 horas siguientes. El equipo de Taskly revisa cada caso y resuelve en máximo 5 días hábiles.' },
+  ]},
+  { cat: '✅ Verificación y seguridad', items: [
+    { q: '¿Cómo verifican a los trabajadores?', a: 'Cada trabajador sube su INE (frente y reverso) y el equipo de Taskly la revisa antes de otorgar el sello de Verificado.' },
+    { q: '¿Cómo verifico mi cuenta?', a: 'Ve a Perfil → Verificación de identidad, sube el frente y reverso de tu INE y toma una selfie en vivo (la cámara se abre en el momento). La selfie debe coincidir con la foto de tu INE. La revisión toma 1-2 días hábiles.' },
+    { q: '¿Puedo bloquear la app con Face ID?', a: 'Sí. Ve a Configuración → Privacidad y Seguridad → Face ID / Touch ID y activa el bloqueo.' },
+    { q: '¿Qué pasa con mis chats al completar un trabajo?', a: 'Para proteger tu privacidad y ahorrar espacio, las fotos del trabajo se eliminan al completarse el pago y el chat se elimina automáticamente 24 horas después.' },
+  ]},
+  { cat: '🏢 Empresas', items: [
+    { q: '¿Cómo registro mi empresa?', a: 'Ve a Configuración → Empresa → Registrar empresa. Necesitas un comprobante del negocio (recibo de luz o agua). El equipo de Taskly revisa y aprueba tu empresa para el directorio.' },
+    { q: '¿Cómo me uno a una empresa?', a: 'Pide el código de invitación al dueño de la empresa y ve a Configuración → Empresa → Unirme a una empresa.' },
+  ]},
+  { cat: '👤 Cuenta', items: [
+    { q: '¿Cómo cambio mi contraseña?', a: 'Ve a Configuración → Cuenta → Restablecer contraseña. Te enviaremos un correo para crear una nueva.' },
+    { q: '¿Cómo elimino mi cuenta?', a: 'Ve a Configuración → Cuenta → Eliminar cuenta. Esta acción es irreversible y borra todos tus datos.' },
+  ]},
+];
+
+function HelpCenterModal({ onClose }) {
+  const C = useTheme();
+  const [search, setSearch] = useState('');
+  const [openId, setOpenId] = useState(null);
+
+  const sections = HELP_ARTICLES.map(s => ({
+    ...s,
+    items: s.items.filter(i => !search
+      || i.q.toLowerCase().includes(search.toLowerCase())
+      || i.a.toLowerCase().includes(search.toLowerCase())),
+  })).filter(s => s.items.length > 0);
+
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Volver</Text></TouchableOpacity>
+          <Text style={[styles.modalTitle, { color: C.text }]}>Centro de ayuda</Text>
+          <View style={{ width: 80 }} />
+        </View>
+        <View style={[styles.searchBarWrap, { backgroundColor: C.card, borderColor: C.border }]}>
+          <Ionicons name="search-outline" size={16} color={C.muted} style={{ marginRight: 6 }} />
+          <TextInput
+            style={[styles.searchBarInput, { color: C.text }]}
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Busca tu duda..."
+            placeholderTextColor={C.muted}
+            clearButtonMode="while-editing"
+          />
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          {sections.length === 0 && (
+            <View style={styles.emptyState}>
+              <Ionicons name="help-circle-outline" size={48} color={C.muted} style={{ marginBottom: 8 }} />
+              <Text style={[styles.emptyStateText, { color: C.muted }]}>Sin resultados para tu búsqueda</Text>
+            </View>
+          )}
+          {sections.map(section => (
+            <View key={section.cat} style={{ marginBottom: 18 }}>
+              <Text style={{ color: C.muted, fontSize: 12, fontWeight: '800', letterSpacing: 0.5, marginBottom: 8 }}>{section.cat}</Text>
+              {section.items.map(item => {
+                const id = section.cat + item.q;
+                const open = openId === id;
+                return (
+                  <TouchableOpacity
+                    key={id}
+                    onPress={() => setOpenId(open ? null : id)}
+                    style={{ backgroundColor: C.card, borderWidth: 1, borderColor: open ? COLORS.accent + '66' : C.border, borderRadius: 12, padding: 14, marginBottom: 8 }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <Text style={{ color: C.text, fontWeight: '700', fontSize: 13, flex: 1 }}>{item.q}</Text>
+                      <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={15} color={C.muted} />
+                    </View>
+                    {open && <Text style={{ color: C.muted, fontSize: 13, lineHeight: 19, marginTop: 8 }}>{item.a}</Text>}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ))}
+          <TouchableOpacity
+            style={[styles.primaryButton, { marginTop: 8 }]}
+            onPress={() => Linking.openURL('mailto:soporte@taskly.com.mx?subject=Soporte Taskly')}
+          >
+            <Text style={styles.primaryButtonText}>✉️ Contactar soporte</Text>
+          </TouchableOpacity>
+          <Text style={{ color: C.muted, fontSize: 11, textAlign: 'center', marginTop: 10 }}>
+            Respondemos en menos de 24 horas hábiles
+          </Text>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+// ─── Phone (SMS) verification ─────────────────────────────────────────────────
+// Requires two backend endpoints on Railway: /send-sms-code and /verify-sms-code
+function PhoneVerifyModal({ userId, onClose }) {
+  const C = useTheme();
+  const [step, setStep] = useState('phone'); // phone | code | done
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const fullPhone = `+52${phone.replace(/\D/g, '')}`;
+
+  const sendCode = async () => {
+    if (phone.replace(/\D/g, '').length !== 10) {
+      Alert.alert('Número inválido', 'Ingresa tu número de 10 dígitos (sin +52).');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await authedFetch(`${BACKEND_URL}/send-sms-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, phone: fullPhone }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error || 'send failed');
+      setStep('code');
+    } catch {
+      Alert.alert('No disponible', 'El servicio de verificación por SMS no está disponible en este momento. Intenta más tarde.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (code.trim().length < 4) return;
+    setLoading(true);
+    try {
+      const res = await authedFetch(`${BACKEND_URL}/verify-sms-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, phone: fullPhone, code: code.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error || !data.verified) throw new Error(data.error || 'invalid');
+      await updateDoc(doc(db, 'users', userId), { phone: fullPhone, phoneVerified: true });
+      setStep('done');
+    } catch {
+      Alert.alert('Código incorrecto', 'Revisa el código e intenta de nuevo.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal visible animationType="slide" transparent>
+      <View style={styles.modalOverlay}>
+        <View style={[styles.actionSheet, { backgroundColor: C.card }]}>
+          {step === 'phone' && (
+            <>
+              <Text style={[styles.sectionHeader, { color: C.text, marginBottom: 4 }]}>📱 Verificar teléfono</Text>
+              <Text style={{ color: C.muted, marginBottom: 16, fontSize: 13 }}>Te enviaremos un código por SMS para confirmar tu número. Esto genera más confianza con otros usuarios.</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={{ color: C.text, fontWeight: '700', fontSize: 15 }}>🇲🇽 +52</Text>
+                <TextInput
+                  style={[styles.input, { flex: 1, borderColor: C.border, color: C.text }]}
+                  value={phone}
+                  onChangeText={setPhone}
+                  placeholder="81 1234 5678"
+                  placeholderTextColor={C.muted}
+                  keyboardType="phone-pad"
+                  maxLength={14}
+                />
+              </View>
+              <TouchableOpacity style={[styles.primaryButton, { marginTop: 14 }, loading && { opacity: 0.6 }]} onPress={sendCode} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Enviar código</Text>}
+              </TouchableOpacity>
+            </>
+          )}
+          {step === 'code' && (
+            <>
+              <Text style={[styles.sectionHeader, { color: C.text, marginBottom: 4 }]}>Ingresa el código</Text>
+              <Text style={{ color: C.muted, marginBottom: 16, fontSize: 13 }}>Enviamos un código por SMS al {fullPhone}.</Text>
+              <TextInput
+                style={[styles.input, { borderColor: C.border, color: C.text, textAlign: 'center', fontSize: 22, letterSpacing: 6 }]}
+                value={code}
+                onChangeText={setCode}
+                placeholder="000000"
+                placeholderTextColor={C.muted}
+                keyboardType="number-pad"
+                maxLength={6}
+              />
+              <TouchableOpacity style={[styles.primaryButton, { marginTop: 14 }, (loading || code.trim().length < 4) && { opacity: 0.6 }]} onPress={verifyCode} disabled={loading || code.trim().length < 4}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Verificar</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setStep('phone')} style={{ marginTop: 12, alignItems: 'center' }}>
+                <Text style={{ color: C.muted, fontSize: 13 }}>Cambiar número</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          {step === 'done' && (
+            <>
+              <Text style={{ fontSize: 44, textAlign: 'center', marginBottom: 8 }}>✅</Text>
+              <Text style={[styles.sectionHeader, { color: C.text, textAlign: 'center', marginBottom: 4 }]}>¡Teléfono verificado!</Text>
+              <Text style={{ color: C.muted, marginBottom: 16, fontSize: 13, textAlign: 'center' }}>Tu número quedó confirmado en tu cuenta.</Text>
+              <TouchableOpacity style={styles.primaryButton} onPress={onClose}>
+                <Text style={styles.primaryButtonText}>Listo</Text>
+              </TouchableOpacity>
+            </>
+          )}
+          {step !== 'done' && (
+            <TouchableOpacity onPress={onClose} style={{ marginTop: 12, alignItems: 'center' }}>
+              <Text style={{ color: C.muted }}>Cancelar</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboarding, themeMode, onThemeChange }) {
   const C = useTheme();
   const [notifPush, setNotifPush] = useState(true);
@@ -4494,7 +5979,28 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
   const [notifJobs, setNotifJobs] = useState(true);
   const [showCreateBusiness, setShowCreateBusiness] = useState(false);
   const [showJoinBusiness, setShowJoinBusiness] = useState(false);
-  const [businessCode, setBusinessCode] = useState('');
+  const [showHelpCenter, setShowHelpCenter] = useState(false);
+  const [showPhoneVerify, setShowPhoneVerify] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem('taskly_biometric').then(v => setBiometricEnabled(v === 'true'));
+  }, []);
+
+  const toggleBiometric = async (value) => {
+    if (value) {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (!hasHardware || !isEnrolled) {
+        Alert.alert('No disponible', 'Tu dispositivo no tiene Face ID, Touch ID o huella configurada. Actívala primero en los ajustes del sistema.');
+        return;
+      }
+      const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Confirma tu identidad', cancelLabel: 'Cancelar' });
+      if (!result.success) return;
+    }
+    setBiometricEnabled(value);
+    await AsyncStorage.setItem('taskly_biometric', value ? 'true' : 'false');
+  };
   const [showPaymentHistory, setShowPaymentHistory] = useState(false);
   const [paymentHistory, setPaymentHistory] = useState({ upcoming: [], inProcess: [], completed: [] });
   const [phLoading, setPhLoading] = useState(false);
@@ -4519,7 +6025,7 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
       });
       // Fetch real Stripe payout data for workers
       if (user.role === 'worker' && userProfile?.stripeAccountId) {
-        fetch(`${BACKEND_URL}/worker-payout-status/${userProfile.stripeAccountId}`)
+        authedFetch(`${BACKEND_URL}/worker-payout-status/${userProfile.stripeAccountId}`)
           .then(r => r.json())
           .then(data => { if (!data.error) setPhPayoutStatus(data); })
           .catch(() => {});
@@ -4555,10 +6061,15 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
         style: 'destructive',
         onPress: async () => {
           try {
-            await deleteDoc(doc(db, 'users', user.id));
-            await auth.currentUser.delete();
+            // Backend cascades all of the user's data + deletes the Auth user (admin
+            // delete bypasses the "requires recent login" error the client hits directly).
+            const res = await authedFetch(`${BACKEND_URL}/delete-account`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'fail');
+            await signOut(auth).catch(() => {});
+            Alert.alert('Cuenta eliminada', 'Tu cuenta y tus datos se han eliminado.');
           } catch {
-            Alert.alert('Error', 'Cierra sesión, vuelve a iniciar y luego intenta eliminar la cuenta.');
+            Alert.alert('Error', 'No se pudo eliminar la cuenta. Verifica tu conexión e intenta de nuevo.');
           }
         },
       },
@@ -4611,9 +6122,12 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
       },
     ]);
 
-  const handleCreateBusiness = async (name, description) => {
-    if (!name.trim()) return;
+  const handleCreateBusiness = async (name, description, logoUri, proofUri) => {
+    if (!name.trim() || !proofUri) return;
     try {
+      const stamp = Date.now();
+      const proofUrl = await uploadImage(proofUri, `businesses/${user.id}/proof_${stamp}.jpg`);
+      const logoUrl = logoUri ? await uploadImage(logoUri, `businesses/${user.id}/logo_${stamp}.jpg`) : null;
       const ref = await addDoc(collection(db, 'businesses'), {
         name: name.trim(),
         description: description.trim(),
@@ -4621,20 +6135,23 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
         ownerName: user.name,
         memberIds: [user.id],
         services: [],
+        logo: logoUrl,
+        proofUrl,
         verificationStatus: 'pending',
+        joinCode: Math.random().toString(36).slice(2, 8).toUpperCase(),
         createdAt: serverTimestamp(),
       });
       await updateDoc(doc(db, 'users', user.id), { businessId: ref.id, businessRole: 'owner' });
       setShowCreateBusiness(false);
-      Alert.alert('✓ Empresa registrada', 'Tu empresa fue registrada y está en revisión. La publicaremos una vez verificada.');
+      Alert.alert('✓ Empresa registrada', 'Tu empresa y comprobante están en revisión. La publicaremos una vez verificada.');
     } catch {
       Alert.alert('Error', 'No se pudo crear la empresa. Intenta de nuevo.');
     }
   };
 
-  const handleJoinBusiness = async () => {
-    if (!businessCode.trim()) return;
-    const snap = await getDocs(query(collection(db, 'businesses'), where('joinCode', '==', businessCode.trim())));
+  const handleJoinBusiness = async (code) => {
+    if (!code?.trim()) return;
+    const snap = await getDocs(query(collection(db, 'businesses'), where('joinCode', '==', code.trim())));
     if (snap.empty) {
       Alert.alert('Código inválido', 'No encontramos una empresa con ese código.');
       return;
@@ -4759,6 +6276,15 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
           {/* PRIVACIDAD Y SEGURIDAD */}
           <Text style={[styles.settingsSectionLabel, { color: C.muted }]}>PRIVACIDAD Y SEGURIDAD</Text>
           <View style={[styles.settingsCard, { backgroundColor: C.card, borderColor: C.border }]}>
+            <SettingsRow
+              icon="chatbox-ellipses-outline"
+              title="Verificar teléfono"
+              subtitle={userProfile?.phoneVerified ? `✓ Verificado: ${userProfile.phone}` : 'Confirma tu número por SMS'}
+              onPress={() => userProfile?.phoneVerified
+                ? Alert.alert('Teléfono verificado', `Tu número ${userProfile.phone} ya está verificado.`)
+                : setShowPhoneVerify(true)}
+            />
+            <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
             <SettingsRow icon="location-outline" title="Permiso de ubicación" subtitle="Gestionar en Ajustes del sistema" onPress={() => Linking.openSettings()} />
             <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
             <SettingsRow icon="camera-outline" title="Permiso de cámara y galería" subtitle="Gestionar en Ajustes del sistema" onPress={() => Linking.openSettings()} />
@@ -4766,9 +6292,8 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
             <SettingsRow
               icon="finger-print-outline"
               title="Face ID / Touch ID"
-              subtitle="Próximamente disponible"
-              disabled
-              rightElement={<Switch value={false} disabled trackColor={{ false: C.border }} thumbColor="#fff" />}
+              subtitle="Pide desbloquear la app al abrirla"
+              rightElement={<Switch value={biometricEnabled} onValueChange={toggleBiometric} trackColor={{ false: C.border, true: COLORS.accent }} thumbColor="#fff" />}
             />
           </View>
 
@@ -4783,19 +6308,20 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
           <View style={[styles.settingsCard, { backgroundColor: C.card, borderColor: C.border }]}>
             <SettingsRow
               icon="help-circle-outline"
-              title="Preguntas frecuentes"
-              onPress={() => Alert.alert('Preguntas frecuentes',
-                '¿Cómo publico un trabajo?\nToca el botón "+" y llena el formulario.\n\n¿Cómo contacto a un trabajador?\nDesde el detalle del trabajo, abre el chat.\n\n¿Qué es un trabajo urgente?\nDestaca tu trabajo por $25 MXN para que aparezca al inicio.\n\n¿Cómo califico a un trabajador?\nUna vez completado el trabajo se solicita una reseña.\n\n¿Cómo verifico mi cuenta?\nVe a Perfil → Verificación de identidad y sube tu INE.'
-              )}
+              title="Centro de ayuda"
+              subtitle="Preguntas frecuentes y guías"
+              onPress={() => setShowHelpCenter(true)}
             />
             <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
             <SettingsRow icon="call-outline" title="Contactar soporte" subtitle="soporte@taskly.com.mx" onPress={() => Linking.openURL('mailto:soporte@taskly.com.mx?subject=Soporte Taskly')} />
             <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
             <SettingsRow icon="flag-outline" title="Reportar un problema" onPress={() => Linking.openURL('mailto:soporte@taskly.com.mx?subject=Reporte de problema')} />
             <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
-            <SettingsRow icon="document-text-outline" title="Términos de servicio" onPress={() => Alert.alert('Términos de servicio', 'Disponibles próximamente en taskly.mx/terminos')} />
+            <SettingsRow icon="document-text-outline" title="Términos y condiciones" subtitle="taskly.com.mx/terminos" onPress={() => Linking.openURL('https://taskly.com.mx/terminos')} />
             <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
-            <SettingsRow icon="shield-checkmark-outline" title="Política de privacidad" onPress={() => Alert.alert('Política de privacidad', 'Disponible próximamente en taskly.mx/privacidad')} />
+            <SettingsRow icon="shield-checkmark-outline" title="Aviso de privacidad" subtitle="taskly.com.mx/privacidad" onPress={() => Linking.openURL('https://taskly.com.mx/privacidad')} />
+            <View style={[styles.settingsDivider, { backgroundColor: C.border }]} />
+            <SettingsRow icon="globe-outline" title="Sitio web" subtitle="taskly.com.mx" onPress={() => Linking.openURL('https://taskly.com.mx')} />
           </View>
 
           {/* ACERCA DE */}
@@ -4822,28 +6348,21 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
 
       {/* Join Business Modal */}
       {showJoinBusiness && (
-        <Modal visible animationType="fade" transparent>
-          <View style={styles.modalOverlay}>
-            <View style={styles.actionSheet}>
-              <Text style={[styles.sectionHeader, { marginBottom: 4 }]}>Unirse a empresa</Text>
-              <Text style={{ color: COLORS.muted, marginBottom: 16, fontSize: 13 }}>Pide el código de invitación al dueño de la empresa.</Text>
-              <TextInput
-                style={styles.input}
-                value={businessCode}
-                onChangeText={setBusinessCode}
-                placeholder="Código de empresa"
-                placeholderTextColor={COLORS.muted}
-                autoCapitalize="none"
-              />
-              <TouchableOpacity style={[styles.primaryButton, { marginTop: 12 }]} onPress={handleJoinBusiness}>
-                <Text style={styles.primaryButtonText}>Enviar solicitud</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setShowJoinBusiness(false)} style={{ marginTop: 12, alignItems: 'center' }}>
-                <Text style={{ color: COLORS.muted }}>Cancelar</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
+        <JoinBusinessInlineModal
+          onConfirm={handleJoinBusiness}
+          onClose={() => setShowJoinBusiness(false)}
+        />
+      )}
+
+      {/* Help Center */}
+      {showHelpCenter && <HelpCenterModal onClose={() => setShowHelpCenter(false)} />}
+
+      {/* Phone (SMS) verification */}
+      {showPhoneVerify && (
+        <PhoneVerifyModal
+          userId={user.id}
+          onClose={() => setShowPhoneVerify(false)}
+        />
       )}
 
       {/* Payment history modal */}
@@ -4893,7 +6412,7 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                     <Text style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{dateLabel}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={{ color: colorAccent, fontWeight: '800', fontSize: 17 }}>${fmtMXN(amount)} MXN</Text>
+                    <Text style={{ color: colorAccent, fontWeight: '800', fontSize: 17 }}><PriceText value={amount} style={{ color: colorAccent, fontWeight: '800', fontSize: 17 }} /> MXN</Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
                       <Ionicons name={item.paymentMethod === 'cash' ? 'cash-outline' : 'card-outline'} size={12} color={C.muted} />
                       <Text style={{ color: C.muted, fontSize: 11 }}>{item.paymentMethod === 'cash' ? 'Efectivo' : 'Tarjeta'}</Text>
@@ -4910,24 +6429,35 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                   <Text style={{ color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 2 }}>DESGLOSE</Text>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                     <Text style={{ color: C.muted, fontSize: 13 }}>Precio acordado</Text>
-                    <Text style={{ color: C.text, fontSize: 13 }}>${fmtMXN(item.assignedPrice)} MXN</Text>
+                    <Text style={{ color: C.text, fontSize: 13 }}><PriceText value={item.assignedPrice} style={{ color: C.text, fontSize: 13 }} /> MXN</Text>
                   </View>
                   {item.isUrgent && (
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                       <Text style={{ color: C.muted, fontSize: 13 }}>Cargo urgente</Text>
-                      <Text style={{ color: C.text, fontSize: 13 }}>+${fmtMXN(URGENT_JOB_PRICE)} MXN</Text>
+                      <Text style={{ color: C.text, fontSize: 13 }}>+<PriceText value={URGENT_JOB_PRICE} style={{ color: C.text, fontSize: 13 }} /> MXN</Text>
                     </View>
                   )}
                   {isWorkerView && (
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                       <Text style={{ color: C.muted, fontSize: 13 }}>Comisión Taskly (2.5%)</Text>
-                      <Text style={{ color: COLORS.red, fontSize: 13 }}>-${fmtMXN(commission)} MXN</Text>
+                      <Text style={{ color: COLORS.red, fontSize: 13 }}>-<PriceText value={commission} style={{ color: COLORS.red, fontSize: 13 }} /> MXN</Text>
                     </View>
+                  )}
+                  {!isWorkerView && (
+                    <>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={{ color: C.muted, fontSize: 13 }}>Comisión de procesamiento (tarjeta)</Text>
+                        <Text style={{ color: C.text, fontSize: 13 }}>+<PriceText value={Math.round((stripeTotal - total) * 100) / 100} style={{ color: C.text, fontSize: 13 }} /> MXN</Text>
+                      </View>
+                      <Text style={{ color: C.muted, fontSize: 11, lineHeight: 15 }}>
+                        Cobrada por Stripe (procesador de pagos) por el pago con tarjeta — no es comisión de Taskly.
+                      </Text>
+                    </>
                   )}
                   <View style={{ height: 1, backgroundColor: C.border, marginVertical: 4 }} />
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                     <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>{isWorkerView ? 'Recibes' : 'Total'}</Text>
-                    <Text style={{ color: colorAccent, fontWeight: '800', fontSize: 14 }}>${fmtMXN(amount)} MXN</Text>
+                    <Text style={{ color: colorAccent, fontWeight: '800', fontSize: 14 }}><PriceText value={amount} style={{ color: colorAccent, fontWeight: '800', fontSize: 14 }} /> MXN</Text>
                   </View>
                   {item.status === 'completed' && (
                     <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: C.border }}>
@@ -4936,6 +6466,7 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                         job={item}
                         payoutStatus={isWorkerView ? phPayoutStatus : null}
                         isWorker={isWorkerView}
+                        workerAccountId={isWorkerView ? user.stripeAccountId : null}
                         clientName={isWorkerView ? (item.userName || '') : (user.name || '')}
                         workerName={isWorkerView ? (user.name || '') : (item.bids?.find(b => b.userId === item.assignedTo)?.userName || '')}
                       />
@@ -4961,7 +6492,7 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
               </View>
 
               {/* Date filter bar */}
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 52 }} contentContainerStyle={{ paddingHorizontal: 16, gap: 8, flexDirection: 'row', alignItems: 'center' }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 52, flexGrow: 0 }} contentContainerStyle={{ paddingHorizontal: 16, gap: 8, flexDirection: 'row', alignItems: 'center' }}>
                 {[['all','Todo'],['month','Este mes'],['3months','3 meses'],['year','Este año']].map(([k, label]) => {
                   const active = phDateFilter === k;
                   return (
@@ -4987,23 +6518,21 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
                     <View style={{ flex: 1, backgroundColor: COLORS.green + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.green + '44', alignItems: 'center' }}>
                       <Ionicons name="checkmark-circle-outline" size={20} color={COLORS.green} />
                       <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>{isWorkerView ? 'Confirmado' : 'Pagado'}</Text>
-                      <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalCompleted)}</Text>
+                      <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 15, marginTop: 2 }}><PriceText value={totalCompleted} style={{ color: COLORS.green, fontWeight: '800', fontSize: 15 }} /></Text>
                       <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
                     </View>
                     <View style={{ flex: 1, backgroundColor: COLORS.yellow + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.yellow + '44', alignItems: 'center' }}>
                       <Ionicons name="time-outline" size={20} color={COLORS.yellow} />
                       <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>En camino</Text>
                       <Text style={{ color: COLORS.yellow, fontWeight: '800', fontSize: 15, marginTop: 2 }}>
-                        ${fmtMXN(isWorkerView && phPayoutStatus?.pending != null
-                          ? phPayoutStatus.pending
-                          : totalPending)}
+                        <PriceText value={isWorkerView && phPayoutStatus?.pending != null ? phPayoutStatus.pending : totalPending} style={{ color: COLORS.yellow, fontWeight: '800', fontSize: 15 }} />
                       </Text>
                       <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
                     </View>
                     <View style={{ flex: 1, backgroundColor: COLORS.blue + '18', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.blue + '44', alignItems: 'center' }}>
                       <Ionicons name="hammer-outline" size={20} color={COLORS.blue} />
                       <Text style={{ color: C.muted, fontSize: 10, marginTop: 4, textAlign: 'center' }}>{isWorkerView ? 'Por cobrar' : 'Por pagar'}</Text>
-                      <Text style={{ color: COLORS.blue, fontWeight: '800', fontSize: 15, marginTop: 2 }}>${fmtMXN(totalUpcoming)}</Text>
+                      <Text style={{ color: COLORS.blue, fontWeight: '800', fontSize: 15, marginTop: 2 }}><PriceText value={totalUpcoming} style={{ color: COLORS.blue, fontWeight: '800', fontSize: 15 }} /></Text>
                       <Text style={{ color: C.muted, fontSize: 9 }}>MXN</Text>
                     </View>
                   </View>
@@ -5048,29 +6577,164 @@ function SettingsScreen({ user, userProfile, onClose, onEditProfile, onShowOnboa
 }
 
 function CreateBusinessInlineModal({ onConfirm, onClose }) {
+  const C = useTheme();
+  const [step, setStep] = useState(0);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [logoUri, setLogoUri] = useState(null);
+  const [proofUri, setProofUri] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const slides = [
+    { icon: '🏢', title: 'Tu empresa en Taskly', desc: 'Registra tu negocio para aparecer en el directorio de empresas y que los clientes te encuentren más fácil.' },
+    { icon: '👥', title: 'Trabaja en equipo', desc: 'Comparte tu código de invitación con tus trabajadores. Los trabajos y reseñas del equipo construyen la reputación de tu empresa.' },
+    { icon: '📄', title: 'Comprueba que es tuya', desc: 'Para proteger a los clientes te pediremos un comprobante del negocio: un recibo de luz o agua a nombre del negocio o del dueño.' },
+    { icon: '✅', title: 'Revisión rápida', desc: 'El equipo de Taskly revisa cada empresa antes de publicarla en el directorio. Te notificamos en cuanto esté aprobada.' },
+  ];
+  const inForm = step >= slides.length;
+
+  const pickImage = async (setter) => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets?.[0]) setter(result.assets[0].uri);
+  };
+
+  const handleSubmit = async () => {
+    if (!name.trim() || !proofUri || submitting) return;
+    setSubmitting(true);
+    try {
+      await onConfirm(name, description, logoUri, proofUri);
+    } finally {
+      setSubmitting(false);
+    }
+  };
   return (
     <Modal visible animationType="slide">
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.modalHeader}>
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
           <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cancelar</Text></TouchableOpacity>
-          <Text style={styles.modalTitle}>Registrar empresa</Text>
+          <Text style={[styles.modalTitle, { color: C.text }]}>Registrar empresa</Text>
           <View style={{ width: 80 }} />
         </View>
-        <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
-          <View style={[styles.infoBox, { borderColor: COLORS.yellow + '66', backgroundColor: COLORS.yellow + '11' }]}>
-            <Text style={[styles.infoText, { color: COLORS.yellow }]}>Tu empresa será revisada antes de aparecer públicamente en el directorio.</Text>
-          </View>
-          <Text style={styles.formLabel}>NOMBRE DE LA EMPRESA *</Text>
-          <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Ej: Servicios Martínez" placeholderTextColor={COLORS.muted} />
-          <Text style={styles.formLabel}>DESCRIPCIÓN</Text>
-          <TextInput style={[styles.input, styles.textArea]} value={description} onChangeText={setDescription} placeholder="¿Qué servicios ofrece tu empresa?" placeholderTextColor={COLORS.muted} multiline numberOfLines={3} />
-          <TouchableOpacity style={styles.primaryButton} onPress={() => onConfirm(name, description)}>
-            <Text style={styles.primaryButtonText}>Registrar empresa</Text>
-          </TouchableOpacity>
-        </ScrollView>
+        {!inForm ? (
+          <>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+              <Text style={styles.onboardingIcon}>{slides[step].icon}</Text>
+              <Text style={[styles.onboardingTitle, { color: C.text }]}>{slides[step].title}</Text>
+              <Text style={[styles.onboardingDesc, { color: C.muted }]}>{slides[step].desc}</Text>
+            </View>
+            <View style={styles.onboardingDots}>
+              {slides.map((_, i) => <View key={i} style={[styles.onboardingDot, { backgroundColor: C.border }, i === step && styles.onboardingDotActive]} />)}
+            </View>
+            <View style={styles.onboardingActions}>
+              <TouchableOpacity style={styles.primaryButton} onPress={() => setStep(s => s + 1)}>
+                <Text style={styles.primaryButtonText}>{step < slides.length - 1 ? 'Siguiente →' : 'Comenzar registro →'}</Text>
+              </TouchableOpacity>
+              {step < slides.length - 1 && (
+                <TouchableOpacity onPress={() => setStep(slides.length)} style={{ marginTop: 14, padding: 10, alignItems: 'center' }}>
+                  <Text style={{ color: C.muted, fontSize: 14 }}>Saltar introducción</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </>
+        ) : (
+          <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
+            <View style={[styles.infoBox, { borderColor: COLORS.yellow + '66', backgroundColor: COLORS.yellow + '11' }]}>
+              <Text style={[styles.infoText, { color: COLORS.yellow }]}>Tu empresa será revisada antes de aparecer públicamente en el directorio.</Text>
+            </View>
+            <Text style={styles.formLabel}>NOMBRE DE LA EMPRESA *</Text>
+            <TextInput style={[styles.input, { borderColor: C.border, color: C.text }]} value={name} onChangeText={setName} placeholder="Ej: Servicios Martínez" placeholderTextColor={C.muted} />
+            <Text style={styles.formLabel}>DESCRIPCIÓN</Text>
+            <TextInput style={[styles.input, styles.textArea, { borderColor: C.border, color: C.text }]} value={description} onChangeText={setDescription} placeholder="¿Qué servicios ofrece tu empresa?" placeholderTextColor={C.muted} multiline numberOfLines={3} />
+
+            <Text style={styles.formLabel}>LOGO (OPCIONAL)</Text>
+            <TouchableOpacity
+              onPress={() => pickImage(setLogoUri)}
+              style={{ width: 90, height: 90, borderRadius: 18, borderWidth: 2, borderStyle: 'dashed', borderColor: logoUri ? COLORS.green : C.border, backgroundColor: C.card, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}
+            >
+              {logoUri
+                ? <Image source={{ uri: logoUri }} style={{ width: '100%', height: '100%' }} />
+                : <Ionicons name="image-outline" size={28} color={C.muted} />}
+            </TouchableOpacity>
+
+            <Text style={styles.formLabel}>COMPROBANTE DEL NEGOCIO *</Text>
+            <Text style={[styles.formHint, { marginTop: -8 }]}>Recibo de luz o agua a nombre del negocio o del dueño. Solo lo ve el equipo de Taskly para verificar la propiedad.</Text>
+            <TouchableOpacity
+              onPress={() => pickImage(setProofUri)}
+              style={{ height: 110, borderRadius: 14, borderWidth: 2, borderStyle: 'dashed', borderColor: proofUri ? COLORS.green : C.border, backgroundColor: C.card, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}
+            >
+              {proofUri
+                ? <Image source={{ uri: proofUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                : <Text style={[styles.ineImageLabel, { color: C.muted }]}>📄{'\n'}Subir comprobante</Text>}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.primaryButton, (!name.trim() || !proofUri || submitting) && { opacity: 0.5 }]}
+              disabled={!name.trim() || !proofUri || submitting}
+              onPress={handleSubmit}
+            >
+              {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Registrar empresa</Text>}
+            </TouchableOpacity>
+          </ScrollView>
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+function JoinBusinessInlineModal({ onConfirm, onClose }) {
+  const C = useTheme();
+  const [step, setStep] = useState(0);
+  const [code, setCode] = useState('');
+  const slides = [
+    { icon: '🤝', title: 'Únete a una empresa', desc: 'Si trabajas con un negocio registrado en Taskly, puedes vincular tu cuenta para formar parte de su equipo.' },
+    { icon: '🔑', title: 'Pide el código', desc: 'El dueño de la empresa tiene un código de invitación único. Pídeselo e ingrésalo aquí — él aprobará tu solicitud.' },
+  ];
+  const inForm = step >= slides.length;
+  return (
+    <Modal visible animationType="slide">
+      <SafeAreaView style={[styles.container, { backgroundColor: C.bg }]}>
+        <StatusBar barStyle={C.bg === '#0A0A0A' ? 'light-content' : 'dark-content'} />
+        <View style={[styles.modalHeader, { borderBottomColor: C.border }]}>
+          <TouchableOpacity onPress={onClose}><Text style={styles.closeButton}>← Cancelar</Text></TouchableOpacity>
+          <Text style={[styles.modalTitle, { color: C.text }]}>Unirse a empresa</Text>
+          <View style={{ width: 80 }} />
+        </View>
+        {!inForm ? (
+          <>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+              <Text style={styles.onboardingIcon}>{slides[step].icon}</Text>
+              <Text style={[styles.onboardingTitle, { color: C.text }]}>{slides[step].title}</Text>
+              <Text style={[styles.onboardingDesc, { color: C.muted }]}>{slides[step].desc}</Text>
+            </View>
+            <View style={styles.onboardingDots}>
+              {slides.map((_, i) => <View key={i} style={[styles.onboardingDot, { backgroundColor: C.border }, i === step && styles.onboardingDotActive]} />)}
+            </View>
+            <View style={styles.onboardingActions}>
+              <TouchableOpacity style={styles.primaryButton} onPress={() => setStep(s => s + 1)}>
+                <Text style={styles.primaryButtonText}>{step < slides.length - 1 ? 'Siguiente →' : 'Ingresar código →'}</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        ) : (
+          <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
+            <Text style={styles.formLabel}>CÓDIGO DE INVITACIÓN</Text>
+            <TextInput
+              style={[styles.input, { borderColor: C.border, color: C.text }]}
+              value={code}
+              onChangeText={setCode}
+              placeholder="Código de empresa"
+              placeholderTextColor={C.muted}
+              autoCapitalize="none"
+            />
+            <TouchableOpacity style={[styles.primaryButton, !code.trim() && { opacity: 0.5 }]} disabled={!code.trim()} onPress={() => onConfirm(code)}>
+              <Text style={styles.primaryButtonText}>Enviar solicitud</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        )}
       </SafeAreaView>
     </Modal>
   );
@@ -5078,8 +6742,10 @@ function CreateBusinessInlineModal({ onConfirm, onClose }) {
 
 // Worker identity verification — INE upload + status display
 function IneVerificationSection({ userId, userProfile, onRefresh }) {
+  const C = useTheme();
   const status = userProfile?.verificationStatus || 'unverified';
   const [ineImages, setIneImages] = useState({ front: null, back: null });
+  const [selfie, setSelfie] = useState(null);
   const [uploading, setUploading] = useState(false);
 
   const pickIne = async (side) => {
@@ -5093,18 +6759,42 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
     }
   };
 
+  // Live selfie: front camera only, gallery not allowed — so the face is captured in
+  // the moment and can be compared against the INE photo. (Manual review for now;
+  // an automated face-match/liveness provider will replace this later.)
+  const takeSelfie = async () => {
+    const { status: camStatus } = await ImagePicker.requestCameraPermissionsAsync();
+    if (camStatus !== 'granted') {
+      Alert.alert('Permiso de cámara', 'Necesitamos tu cámara para tomar una selfie en vivo y verificar tu identidad.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      cameraType: ImagePicker.CameraType.front,
+      allowsEditing: false,
+      quality: 0.6,
+    });
+    if (!result.canceled && result.assets?.[0]) {
+      setSelfie(result.assets[0].uri);
+    }
+  };
+
   const submitVerification = async () => {
     if (!ineImages.front || !ineImages.back) {
       Alert.alert('Faltan imágenes', 'Sube el frente y reverso de tu INE.');
+      return;
+    }
+    if (!selfie) {
+      Alert.alert('Falta tu selfie', 'Toma una selfie en vivo para confirmar que eres la persona de la INE.');
       return;
     }
     setUploading(true);
     try {
       const frontUrl = await uploadImage(ineImages.front, `verification/${userId}/ine_front.jpg`);
       const backUrl = await uploadImage(ineImages.back, `verification/${userId}/ine_back.jpg`);
+      const selfieUrl = await uploadImage(selfie, `verification/${userId}/selfie.jpg`);
       await updateDoc(doc(db, 'users', userId), {
         verificationStatus: 'pending',
-        ineImages: { front: frontUrl, back: backUrl },
+        ineImages: { front: frontUrl, back: backUrl, selfie: selfieUrl },
         verificationRequestedAt: serverTimestamp(),
       });
       Alert.alert('✓ Enviado', 'Tu solicitud está en revisión. Te notificaremos cuando sea aprobada.');
@@ -5127,12 +6817,12 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
     <View style={styles.ineSection}>
       <Text style={styles.formLabel}>VERIFICACIÓN DE IDENTIDAD</Text>
 
-      <View style={[styles.ineStatusBox, { borderColor: cfg.color + '66' }]}>
+      <View style={[styles.ineStatusBox, { backgroundColor: C.card, borderColor: cfg.color + '66' }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <Ionicons name={cfg.icon} size={22} color={cfg.color} />
           <View style={{ flex: 1 }}>
             <Text style={[styles.ineStatusLabel, { color: cfg.color }]}>{cfg.label}</Text>
-            <Text style={styles.ineStatusDesc}>{cfg.desc}</Text>
+            <Text style={[styles.ineStatusDesc, { color: C.muted }]}>{cfg.desc}</Text>
           </View>
         </View>
       </View>
@@ -5141,21 +6831,35 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
         <>
           <Text style={[styles.formLabel, { marginTop: 12 }]}>SUBE TU INE</Text>
           <View style={{ flexDirection: 'row', gap: 12 }}>
-            <TouchableOpacity style={[styles.ineImageBox, ineImages.front && styles.ineImageBoxDone]} onPress={() => pickIne('front')}>
+            <TouchableOpacity style={[styles.ineImageBox, { backgroundColor: C.card, borderColor: C.border }, ineImages.front && styles.ineImageBoxDone]} onPress={() => pickIne('front')}>
               {ineImages.front
                 ? <Image source={{ uri: ineImages.front }} style={styles.ineThumb} />
-                : <Text style={styles.ineImageLabel}>📷{'\n'}Frente</Text>}
+                : <Text style={[styles.ineImageLabel, { color: C.muted }]}>📷{'\n'}Frente</Text>}
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.ineImageBox, ineImages.back && styles.ineImageBoxDone]} onPress={() => pickIne('back')}>
+            <TouchableOpacity style={[styles.ineImageBox, { backgroundColor: C.card, borderColor: C.border }, ineImages.back && styles.ineImageBoxDone]} onPress={() => pickIne('back')}>
               {ineImages.back
                 ? <Image source={{ uri: ineImages.back }} style={styles.ineThumb} />
-                : <Text style={styles.ineImageLabel}>📷{'\n'}Reverso</Text>}
+                : <Text style={[styles.ineImageLabel, { color: C.muted }]}>📷{'\n'}Reverso</Text>}
             </TouchableOpacity>
           </View>
+
+          <Text style={[styles.formLabel, { marginTop: 16 }]}>SELFIE EN VIVO</Text>
+          <Text style={{ color: C.muted, fontSize: 12, lineHeight: 17, marginBottom: 8 }}>
+            Toma una foto de tu rostro en este momento. Debe coincidir con la foto de tu INE. La cámara frontal se abre directamente — no se permite elegir de la galería.
+          </Text>
           <TouchableOpacity
-            style={[styles.primaryButton, { marginTop: 12 }, (!ineImages.front || !ineImages.back || uploading) && { opacity: 0.5 }]}
+            style={[{ backgroundColor: C.card, borderColor: selfie ? COLORS.green : C.border, borderWidth: 1, borderRadius: 12, height: 150, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}
+            onPress={takeSelfie}
+          >
+            {selfie
+              ? <Image source={{ uri: selfie }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              : <Text style={[styles.ineImageLabel, { color: C.muted }]}>🤳{'\n'}Tomar selfie en vivo</Text>}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.primaryButton, { marginTop: 12 }, (!ineImages.front || !ineImages.back || !selfie || uploading) && { opacity: 0.5 }]}
             onPress={submitVerification}
-            disabled={!ineImages.front || !ineImages.back || uploading}
+            disabled={!ineImages.front || !ineImages.back || !selfie || uploading}
           >
             {uploading
               ? <ActivityIndicator color="#fff" />
@@ -5175,7 +6879,7 @@ function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
   const handleOpenOnboarding = async () => {
     setLoading(true);
     try {
-      const res1 = await fetch(`${BACKEND_URL}/create-connect-account`, {
+      const res1 = await authedFetch(`${BACKEND_URL}/create-connect-account`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, name: userName }),
@@ -5185,7 +6889,7 @@ function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
 
       await updateDoc(doc(db, 'users', userId), { stripeAccountId: accountId });
 
-      const res2 = await fetch(`${BACKEND_URL}/create-account-link`, {
+      const res2 = await authedFetch(`${BACKEND_URL}/create-account-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountId, userId }),
@@ -5246,31 +6950,73 @@ function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
 
 function AdminPanelModal({ visible, onClose }) {
   const C = useTheme();
-  const [tab, setTab] = useState('pending');
+  const [tab, setTab] = useState('stats');
   const [pendingUsers, setPendingUsers] = useState([]);
   const [verifiedUsers, setVerifiedUsers] = useState([]);
+  const [pendingBusinesses, setPendingBusinesses] = useState([]);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(null);
 
   useEffect(() => {
     if (!visible) return;
     setLoading(true);
-    const fetchVerifications = async () => {
+    const fetchAll = async () => {
       try {
-        const [pendingSnap, verifiedSnap] = await Promise.all([
+        const [pendingSnap, verifiedSnap, bizSnap, usersSnap, jobsSnap] = await Promise.all([
           getDocs(query(collection(db, 'users'), where('verificationStatus', '==', 'pending'))),
           getDocs(query(collection(db, 'users'), where('verificationStatus', '==', 'verified'))),
+          getDocs(query(collection(db, 'businesses'), where('verificationStatus', '==', 'pending'))),
+          getDocs(collection(db, 'users')),
+          getDocs(collection(db, 'jobs')),
         ]);
         setPendingUsers(pendingSnap.docs.map(d => ({ id: d.id, ...d.data() })));
         setVerifiedUsers(verifiedSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+        setPendingBusinesses(bizSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+        const allUsers = usersSnap.docs.map(d => d.data());
+        const allJobs = jobsSnap.docs.map(d => d.data());
+        const completed = allJobs.filter(j => j.status === 'completed');
+        const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        setStats({
+          totalUsers: allUsers.length,
+          workers: allUsers.filter(u => u.role === 'worker').length,
+          clients: allUsers.filter(u => u.role === 'client').length,
+          totalJobs: allJobs.length,
+          openJobs: allJobs.filter(j => j.status === 'open').length,
+          activeJobs: allJobs.filter(j => j.status === 'assigned' || j.status === 'pending_payment').length,
+          completedJobs: completed.length,
+          jobsThisWeek: allJobs.filter(j => (j.createdAt?.toMillis?.() ?? 0) >= weekAgo).length,
+          gmv: completed.reduce((sum, j) => sum + (j.assignedPrice || 0), 0),
+          tasklyRevenue: completed.filter(j => j.paymentMethod !== 'cash').reduce((sum, j) => sum + (j.assignedPrice || 0) * 0.025, 0),
+        });
       } catch (e) {
-        Alert.alert('Error', 'No se pudieron cargar las verificaciones.');
+        Alert.alert('Error', 'No se pudieron cargar los datos del panel.');
       } finally {
         setLoading(false);
       }
     };
-    fetchVerifications();
+    fetchAll();
   }, [visible]);
+
+  const handleBusinessVerdict = async (biz, verdict) => {
+    setProcessing(biz.id);
+    try {
+      await updateDoc(doc(db, 'businesses', biz.id), {
+        verificationStatus: verdict,
+        verificationReviewedAt: serverTimestamp(),
+      });
+      await createNotification(biz.ownerId, verdict === 'verified' ? 'business_approved' : 'business_rejected', 'Taskly', {
+        jobTitle: biz.name,
+        jobId: '',
+      });
+      setPendingBusinesses(prev => prev.filter(b => b.id !== biz.id));
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo actualizar la empresa.');
+    } finally {
+      setProcessing(null);
+    }
+  };
 
   const handleVerdict = async (userId, userName, verdict) => {
     setProcessing(userId);
@@ -5325,6 +7071,13 @@ function AdminPanelModal({ visible, onClose }) {
               <Text style={{ color: C.muted, fontSize: 11 }}>Sin reverso</Text>
             </View>
           )}
+          {u.ineImages.selfie ? (
+            <Image source={{ uri: u.ineImages.selfie }} style={{ flex: 1, height: 100, borderRadius: 8, backgroundColor: C.border }} resizeMode="cover" />
+          ) : (
+            <View style={{ flex: 1, height: 100, borderRadius: 8, backgroundColor: C.border, justifyContent: 'center', alignItems: 'center' }}>
+              <Text style={{ color: C.muted, fontSize: 11 }}>Sin selfie</Text>
+            </View>
+          )}
         </View>
       )}
       {u.verificationStatus === 'pending' && (
@@ -5366,17 +7119,19 @@ function AdminPanelModal({ visible, onClose }) {
           </View>
 
           {/* Tabs */}
-          <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 10 }}>
+          <View style={{ flexDirection: 'row', paddingHorizontal: 16, paddingTop: 12, gap: 8 }}>
             {[
-              { key: 'pending',  label: `Pendientes (${pendingUsers.length})` },
-              { key: 'verified', label: `Verificados (${verifiedUsers.length})` },
+              { key: 'stats',    label: 'Resumen' },
+              { key: 'pending',  label: `INE (${pendingUsers.length})` },
+              { key: 'business', label: `Empresas (${pendingBusinesses.length})` },
+              { key: 'verified', label: 'Verificados' },
             ].map(t => (
               <TouchableOpacity
                 key={t.key}
                 style={{ flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center', backgroundColor: tab === t.key ? '#1a1a2e' : C.card, borderWidth: 1, borderColor: tab === t.key ? '#4a4a8a' : C.border }}
                 onPress={() => setTab(t.key)}
               >
-                <Text style={{ color: tab === t.key ? '#a0a0ff' : C.muted, fontWeight: '700', fontSize: 13 }}>{t.label}</Text>
+                <Text style={{ color: tab === t.key ? '#a0a0ff' : C.muted, fontWeight: '700', fontSize: 11 }}>{t.label}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -5385,6 +7140,95 @@ function AdminPanelModal({ visible, onClose }) {
             <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
               <ActivityIndicator color={COLORS.accent} />
             </View>
+          ) : tab === 'stats' ? (
+            <ScrollView contentContainerStyle={{ padding: 16 }}>
+              {stats && (
+                <>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                    {[
+                      ['Usuarios', stats.totalUsers, 'people-outline', COLORS.accent],
+                      ['Trabajadores', stats.workers, 'construct-outline', COLORS.blue],
+                      ['Clientes', stats.clients, 'person-outline', COLORS.green],
+                      ['Trabajos totales', stats.totalJobs, 'briefcase-outline', COLORS.accent],
+                      ['Abiertos', stats.openJobs, 'radio-button-on-outline', COLORS.blue],
+                      ['En curso', stats.activeJobs, 'hammer-outline', COLORS.yellow],
+                      ['Completados', stats.completedJobs, 'checkmark-circle-outline', COLORS.green],
+                      ['Esta semana', stats.jobsThisWeek, 'trending-up-outline', COLORS.accent],
+                    ].map(([label, value, icon, color]) => (
+                      <View key={label} style={{ width: '48%', backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border, padding: 14 }}>
+                        <Ionicons name={icon} size={18} color={color} />
+                        <Text style={{ color: C.text, fontSize: 22, fontWeight: '900', marginTop: 6 }}>{value}</Text>
+                        <Text style={{ color: C.muted, fontSize: 11 }}>{label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  <View style={{ backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: '#4a4a8a', padding: 16, marginTop: 12 }}>
+                    <Text style={{ color: '#a0a0ff', fontSize: 12, fontWeight: '700', marginBottom: 8 }}>💰 DINERO</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <Text style={{ color: C.muted, fontSize: 13 }}>Valor de trabajos completados</Text>
+                      <Text style={{ color: C.text, fontWeight: '800', fontSize: 13 }}>${stats.gmv.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <Text style={{ color: C.muted, fontSize: 13 }}>Comisión Taskly estimada (2.5%)</Text>
+                      <Text style={{ color: COLORS.green, fontWeight: '800', fontSize: 13 }}>${stats.tasklyRevenue.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} MXN</Text>
+                    </View>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+          ) : tab === 'business' ? (
+            <FlatList
+              data={pendingBusinesses}
+              keyExtractor={b => b.id}
+              contentContainerStyle={{ padding: 16 }}
+              ListEmptyComponent={
+                <View style={{ alignItems: 'center', marginTop: 60 }}>
+                  <Ionicons name="business-outline" size={48} color={C.muted} />
+                  <Text style={{ color: C.muted, marginTop: 12, fontSize: 15 }}>No hay empresas pendientes</Text>
+                </View>
+              }
+              renderItem={({ item: b }) => (
+                <View style={{ backgroundColor: C.card, borderRadius: 12, borderWidth: 1, borderColor: C.border, padding: 14, marginBottom: 12 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    {b.logo
+                      ? <Image source={{ uri: b.logo }} style={{ width: 40, height: 40, borderRadius: 10 }} />
+                      : <Ionicons name="business-outline" size={32} color={C.muted} />}
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: C.text, fontWeight: '700', fontSize: 14 }}>{b.name}</Text>
+                      <Text style={{ color: C.muted, fontSize: 12 }}>Dueño: {b.ownerName}</Text>
+                    </View>
+                  </View>
+                  {b.description ? <Text style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>{b.description}</Text> : null}
+                  <Text style={{ color: C.muted, fontSize: 11, fontWeight: '700', marginBottom: 6 }}>COMPROBANTE DEL NEGOCIO</Text>
+                  {b.proofUrl ? (
+                    <Image source={{ uri: b.proofUrl }} style={{ width: '100%', height: 160, borderRadius: 8, backgroundColor: C.border, marginBottom: 12 }} resizeMode="contain" />
+                  ) : (
+                    <Text style={{ color: COLORS.red, fontSize: 12, marginBottom: 12 }}>⚠️ Sin comprobante (registro anterior)</Text>
+                  )}
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity
+                      style={{ flex: 1, backgroundColor: COLORS.green, borderRadius: 8, padding: 10, alignItems: 'center' }}
+                      onPress={() => handleBusinessVerdict(b, 'verified')}
+                      disabled={processing === b.id}
+                    >
+                      {processing === b.id
+                        ? <ActivityIndicator color="#fff" size="small" />
+                        : <Text style={{ color: '#fff', fontWeight: '700' }}>Aprobar</Text>}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={{ flex: 1, backgroundColor: COLORS.red + 'dd', borderRadius: 8, padding: 10, alignItems: 'center' }}
+                      onPress={() => Alert.alert('Rechazar empresa', `¿Rechazar "${b.name}"?`, [
+                        { text: 'Cancelar', style: 'cancel' },
+                        { text: 'Rechazar', style: 'destructive', onPress: () => handleBusinessVerdict(b, 'rejected') },
+                      ])}
+                      disabled={processing === b.id}
+                    >
+                      <Text style={{ color: '#fff', fontWeight: '700' }}>Rechazar</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            />
           ) : (
             <FlatList
               data={tab === 'pending' ? pendingUsers : verifiedUsers}
@@ -5807,8 +7651,9 @@ function SwipeableNotification({ item, onRead, onDelete, onPress }) {
   snapToRef.current = (toValue, done) => {
     restPos.current = toValue;
     Animated.spring(translateX, {
+      // JS driver so the action background color can interpolate with the drag
+      useNativeDriver: false,
       toValue,
-      useNativeDriver: true,
       bounciness: 5,
       speed: 16,
     }).start(done);
@@ -5816,10 +7661,15 @@ function SwipeableNotification({ item, onRead, onDelete, onPress }) {
 
   const panResponder = useRef(
     PanResponder.create({
-      // Don't claim on tap-start; only claim on horizontal move
+      // Don't claim on tap-start; only claim once the drag is mostly horizontal.
+      // A forgiving cone (dx just needs to beat dy) lets diagonal swipes through
+      // so a little vertical drift no longer kills the gesture.
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, g) =>
-        Math.abs(g.dx) > 8 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+        Math.abs(g.dx) > 6 && Math.abs(g.dx) > Math.abs(g.dy),
+      // Once we own a horizontal swipe, don't let the FlatList / pull-to-refresh
+      // steal it when the finger wanders vertically.
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         // Additive tracking from current resting position
         translateX.setOffset(restPos.current);
@@ -5856,26 +7706,6 @@ function SwipeableNotification({ item, onRead, onDelete, onPress }) {
     })
   ).current;
 
-  const getNotifIcon = (type) => {
-    const map = {
-      new_bid:          { name: 'chatbubble-outline',       color: COLORS.blue },
-      bid_accepted:     { name: 'checkmark-circle-outline', color: COLORS.green },
-      bid_declined:     { name: 'close-circle-outline',     color: COLORS.red },
-      job_completed:     { name: 'checkmark-done-outline',   color: COLORS.green },
-      payment_confirmed: { name: 'card-outline',              color: COLORS.green },
-      payment_received:  { name: 'cash-outline',              color: COLORS.green },
-      payment_requested: { name: 'card-outline',              color: COLORS.accent },
-      location_shared:  { name: 'location-outline',         color: COLORS.accent },
-      review_received:  { name: 'star-outline',             color: COLORS.yellow },
-      direct_proposal:  { name: 'paper-plane-outline',      color: COLORS.purple },
-      schedule_proposed:{ name: 'calendar-outline',         color: COLORS.blue },
-      schedule_agreed:  { name: 'calendar-outline',         color: COLORS.green },
-      account_verified: { name: 'shield-checkmark-outline', color: COLORS.green },
-      account_rejected: { name: 'shield-outline',           color: COLORS.red },
-    };
-    return map[type] || { name: 'notifications-outline', color: COLORS.muted };
-  };
-
   const handlePress = () => {
     if (restPos.current !== 0) {
       snapToRef.current(0);
@@ -5884,56 +7714,100 @@ function SwipeableNotification({ item, onRead, onDelete, onPress }) {
     }
   };
 
-  const notifIcon = getNotifIcon(item.type);
+  const meta = getNotifMeta(item.type);
+  const title = item.title || meta.title;
+  const body = item.body || stripLeadingEmoji(item.message || '');
+
+  // Gradual color reveal, iOS Mail style: the action fades in with the drag,
+  // intensifies toward the full color, then deepens past the trigger threshold.
+  const leftColor = translateX.interpolate({
+    inputRange: [0, PEEK, FULL],
+    outputRange: ['rgba(46,204,113,0.45)', 'rgba(46,204,113,1)', 'rgba(39,174,96,1)'],
+    extrapolate: 'clamp',
+  });
+  const leftOpacity = translateX.interpolate({
+    inputRange: [0, 12], outputRange: [0, 1], extrapolate: 'clamp',
+  });
+  const leftIconScale = translateX.interpolate({
+    inputRange: [PEEK, FULL], outputRange: [1, 1.18], extrapolate: 'clamp',
+  });
+  const rightColor = translateX.interpolate({
+    inputRange: [-FULL, -PEEK, 0],
+    outputRange: ['rgba(192,57,43,1)', 'rgba(231,76,60,1)', 'rgba(231,76,60,0.45)'],
+    extrapolate: 'clamp',
+  });
+  const rightOpacity = translateX.interpolate({
+    inputRange: [-12, 0], outputRange: [1, 0], extrapolate: 'clamp',
+  });
+  const rightIconScale = translateX.interpolate({
+    inputRange: [-FULL, -PEEK], outputRange: [1.18, 1], extrapolate: 'clamp',
+  });
 
   return (
-    // Container clips everything to the same rounded shape — action buttons
-    // are fully hidden at rest and only revealed as the card slides
-    <View style={{ marginBottom: 12, borderRadius: 14, overflow: 'hidden', backgroundColor: C.card }}>
-      {/* Left action — green, revealed when card slides right */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() => { snapToRef.current(0, () => { if (!isRead.current) cbRead.current(); }); }}
+    // Container clips everything to the same rounded shape — the action layers
+    // sit full-bleed behind the card and are revealed as it slides
+    <View style={{ marginBottom: 10, borderRadius: 14, overflow: 'hidden', backgroundColor: C.card }}>
+      {/* Left action — green, color deepens as you pull right */}
+      <Animated.View
+        pointerEvents="box-none"
         style={{
-          position: 'absolute', left: 0, top: 0, bottom: 0, width: PEEK,
-          backgroundColor: COLORS.green, justifyContent: 'center', alignItems: 'center',
+          position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+          backgroundColor: leftColor, opacity: leftOpacity,
+          justifyContent: 'center', alignItems: 'flex-start',
         }}
       >
-        <Ionicons name="checkmark-outline" size={22} color="#fff" />
-        <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 2 }}>Leída</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => { snapToRef.current(0, () => { if (!isRead.current) cbRead.current(); }); }}
+          style={{ width: PEEK, height: '100%', justifyContent: 'center', alignItems: 'center' }}
+        >
+          <Animated.View style={{ alignItems: 'center', transform: [{ scale: leftIconScale }] }}>
+            <Ionicons name="checkmark-outline" size={22} color="#fff" />
+            <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 2 }}>Leída</Text>
+          </Animated.View>
+        </TouchableOpacity>
+      </Animated.View>
 
-      {/* Right action — red, revealed when card slides left */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() => { snapToRef.current(-500, () => cbDelete.current()); }}
+      {/* Right action — red, color deepens as you pull left */}
+      <Animated.View
+        pointerEvents="box-none"
         style={{
-          position: 'absolute', right: 0, top: 0, bottom: 0, width: PEEK,
-          backgroundColor: COLORS.red, justifyContent: 'center', alignItems: 'center',
+          position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+          backgroundColor: rightColor, opacity: rightOpacity,
+          justifyContent: 'center', alignItems: 'flex-end',
         }}
       >
-        <Ionicons name="trash-outline" size={22} color="#fff" />
-        <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 2 }}>Eliminar</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => { snapToRef.current(-500, () => cbDelete.current()); }}
+          style={{ width: PEEK, height: '100%', justifyContent: 'center', alignItems: 'center' }}
+        >
+          <Animated.View style={{ alignItems: 'center', transform: [{ scale: rightIconScale }] }}>
+            <Ionicons name="trash-outline" size={22} color="#fff" />
+            <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 2 }}>Eliminar</Text>
+          </Animated.View>
+        </TouchableOpacity>
+      </Animated.View>
 
       <Animated.View style={{ transform: [{ translateX }] }} {...panResponder.panHandlers}>
         <TouchableOpacity
           activeOpacity={0.85}
           onPress={handlePress}
-          style={[styles.notificationCard, !item.read && styles.notificationUnread, { marginBottom: 0, backgroundColor: C.card }]}
+          style={[styles.notificationCard, { marginBottom: 0, backgroundColor: C.card, borderColor: C.border }]}
         >
-          <View style={[styles.notificationIconWrap, { backgroundColor: notifIcon.color + '22' }]}>
-            <Ionicons name={notifIcon.name} size={20} color={notifIcon.color} />
+          <View style={[styles.notificationIconWrap, { backgroundColor: meta.color + '22' }]}>
+            <Ionicons name={meta.icon} size={19} color={meta.color} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.notificationMessage, { color: C.text }]}>{item.message}</Text>
-            {item.createdAt && (
-              <Text style={[styles.notificationTime, { color: C.muted }]}>
-                {new Date(item.createdAt.toDate()).toLocaleString('es-MX', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            <View style={styles.notificationTitleRow}>
+              {!item.read && <View style={styles.unreadDot} />}
+              <Text numberOfLines={1} style={[styles.notificationTitle, { color: C.text, fontWeight: item.read ? '600' : '700', flex: 1 }]}>
+                {title}
               </Text>
-            )}
+              <Text style={[styles.notificationTime, { color: C.muted }]}>{relTime(item.createdAt)}</Text>
+            </View>
+            <Text numberOfLines={2} style={[styles.notificationBody, { color: C.muted }]}>{body}</Text>
           </View>
-          {!item.read && <View style={styles.unreadDot} />}
         </TouchableOpacity>
       </Animated.View>
     </View>
@@ -6000,8 +7874,10 @@ function NotificationsScreen({ user, onClose, onOpenJob }) {
         </View>
 
         {unreadCount > 0 && (
-          <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
-            <Text style={{ color: C.muted, fontSize: 12 }}>← Desliza a la derecha para marcar como leída · Izquierda para eliminar →</Text>
+          <View style={{ paddingHorizontal: 20, paddingTop: 2, paddingBottom: 10 }}>
+            <Text style={{ color: C.muted, fontSize: 13, fontWeight: '500' }}>
+              {unreadCount} sin leer
+            </Text>
           </View>
         )}
 
@@ -6050,7 +7926,7 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
   const handleStart = async () => {
     setLoading(true);
     try {
-      const res1 = await fetch(`${BACKEND_URL}/create-connect-account`, {
+      const res1 = await authedFetch(`${BACKEND_URL}/create-connect-account`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, name: userName }),
@@ -6060,7 +7936,7 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
 
       await updateDoc(doc(db, 'users', userId), { stripeAccountId: accountId });
 
-      const res2 = await fetch(`${BACKEND_URL}/create-account-link`, {
+      const res2 = await authedFetch(`${BACKEND_URL}/create-account-link`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountId, userId }),
@@ -6082,13 +7958,14 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
           const jd = jobDoc.data();
           if (!jd.stripePaymentIntentId || !jd.workerPortion) continue;
           try {
-            const r = await fetch(`${BACKEND_URL}/release-transfer`, {
+            const r = await authedFetch(`${BACKEND_URL}/release-transfer`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 stripeAccountId: accountId,
                 stripePaymentIntentId: jd.stripePaymentIntentId,
                 workerPortionCentavos: Math.round(jd.workerPortion * 100),
+                jobTitle: jd.title || '',
               }),
             });
             const { transferId } = await r.json();
@@ -6783,6 +8660,18 @@ function PhoneAuthModal({ role, onClose }) {
   );
 }
 
+// Official multi-color Google "G" mark (per Google branding guidelines)
+function GoogleGLogo({ size = 18 }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 48 48">
+      <Path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <Path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <Path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <Path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </Svg>
+  );
+}
+
 // Isolated so the hook only mounts when Google is properly configured — prevents crash when IDs are placeholder
 function GoogleSignInButton({ role, disabled }) {
   const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
@@ -6804,10 +8693,7 @@ function GoogleSignInButton({ role, disabled }) {
 
   return (
     <TouchableOpacity style={styles.googleButton} onPress={() => promptGoogleAsync()} disabled={disabled} activeOpacity={0.85}>
-      <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center', marginRight: 2 }}>
-        {/* Google "G" rendered with brand colors */}
-        <Text style={{ fontSize: 18, fontWeight: '900', color: '#4285F4', letterSpacing: -1 }}>G</Text>
-      </View>
+      <View style={{ marginRight: 12 }}><GoogleGLogo size={18} /></View>
       <Text style={styles.googleButtonText}>Iniciar sesión con Google</Text>
     </TouchableOpacity>
   );
@@ -6946,9 +8832,7 @@ function LoginScreen({ role, onBack }) {
               ? <GoogleSignInButton role={role} disabled={loading} />
               : (
                 <TouchableOpacity style={[styles.googleButton, { opacity: 0.4 }]} disabled>
-                  <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center', marginRight: 2 }}>
-                    <Text style={{ fontSize: 18, fontWeight: '900', color: '#4285F4', letterSpacing: -1 }}>G</Text>
-                  </View>
+                  <View style={{ marginRight: 12 }}><GoogleGLogo size={18} /></View>
                   <Text style={styles.googleButtonText}>Iniciar sesión con Google</Text>
                 </TouchableOpacity>
               )}
@@ -7131,6 +9015,30 @@ export default function App() {
   const [needsEmailVerification, setNeedsEmailVerification] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
+  const [biometricLocked, setBiometricLocked] = useState(false);
+  const [activeChatInfo, setActiveChatInfo] = useState(null); // { chatId, otherUser, job } from Chats tab
+  const [selectedClientProfile, setSelectedClientProfile] = useState(null);
+
+  const promptBiometricUnlock = async () => {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Desbloquea Taskly', cancelLabel: 'Cancelar' });
+      if (result.success) setBiometricLocked(false);
+    } catch {}
+  };
+
+  // App lock: if the user enabled Face ID / Touch ID, require it on launch
+  useEffect(() => {
+    if (!user) { setBiometricLocked(false); return; }
+    AsyncStorage.getItem('taskly_biometric').then(async (v) => {
+      if (v !== 'true') return;
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      if (hasHardware && isEnrolled) {
+        setBiometricLocked(true);
+        promptBiometricUnlock();
+      }
+    });
+  }, [user?.id]);
   const [jobSearch, setJobSearch] = useState('');
   const [jobs, setJobs] = useState([]);
   const [myJobs, setMyJobs] = useState([]);
@@ -7139,8 +9047,10 @@ export default function App() {
   const [myBids, setMyBids] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [selectedJob, setSelectedJob] = useState(null);
+  const [actionSheetJob, setActionSheetJob] = useState(null); // long-press quick actions
   const [showPostJob, setShowPostJob] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showWorkers, setShowWorkers] = useState(false);
@@ -7149,7 +9059,7 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [selectedRole, setSelectedRole] = useState(null);
   const [activeTab, setActiveTab] = useState('browse');
-  const [exploreSection, setExploreSection] = useState('listings');
+  const [exploreSection, setExploreSection] = useState('workers');
   const [bidFilter, setBidFilter] = useState('all');
   const [bidSort, setBidSort] = useState('date');
   const [refreshing, setRefreshing] = useState(false);
@@ -7208,9 +9118,12 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        // Test accounts skip email verification ONLY in development builds. In production
+        // (__DEV__ === false) every password account must verify — the bypass is disabled.
         const TEST_EMAILS = ['cliente@cliente.com', 'trabajador@trabajador.com', 'trabajador2@trabajador.com', 'trabajador3@trabajador.com'];
+        const isTestBypass = __DEV__ && TEST_EMAILS.includes(firebaseUser.email);
         const isPasswordProvider = firebaseUser.providerData?.some(p => p.providerId === 'password');
-        if (isPasswordProvider && !firebaseUser.emailVerified && !TEST_EMAILS.includes(firebaseUser.email)) {
+        if (isPasswordProvider && !firebaseUser.emailVerified && !isTestBypass) {
           setNeedsEmailVerification(true);
           setVerificationEmail(firebaseUser.email || '');
           if (initializing) setInitializing(false);
@@ -7258,6 +9171,7 @@ export default function App() {
 
   // Open job on cold-start tap (app was killed when notification arrived)
   useEffect(() => {
+    if (!Notifications) return;
     Notifications.getLastNotificationResponseAsync().then(async (response) => {
       if (!response) return;
       const jobId = response.notification.request.content.data?.jobId;
@@ -7272,6 +9186,7 @@ export default function App() {
 
   // Open job when user taps a notification while app is running
   useEffect(() => {
+    if (!Notifications) return;
     const sub = Notifications.addNotificationResponseReceivedListener(async (response) => {
       const jobId = response.notification.request.content.data?.jobId;
       if (jobId) {
@@ -7342,9 +9257,12 @@ export default function App() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const activeJobs = [];
       const doneJobs = [];
-      
+      const now = Date.now();
+
       snapshot.forEach((doc) => {
         const job = { id: doc.id, ...doc.data() };
+        // 30 days after completion/cancellation, auto-delete the job, its chats and media
+        if (job.deleteAtMs && job.deleteAtMs <= now) { purgeJob(job); return; }
         if (job.status === 'completed') {
           doneJobs.push(job);
         } else {
@@ -7411,6 +9329,25 @@ export default function App() {
     return unsubscribe;
   }, [user]);
 
+  // Unread-chats count for the Chats tab badge: a chat is unread when it was updated after
+  // the current user last read it (their own sends mark it read, so they don't self-count).
+  useEffect(() => {
+    if (!user?.id) return;
+    const q = query(collection(db, 'chats'), where('participants', 'array-contains', user.id));
+    return onSnapshot(q, (snap) => {
+      let n = 0;
+      const now = Date.now();
+      snap.forEach((d) => {
+        const c = d.data();
+        if (c.deleteAtMs && c.deleteAtMs <= now) return;
+        const upd = c.updatedAt?.toMillis?.() ?? 0;
+        const read = c.lastReadBy?.[user.id]?.toMillis?.() ?? 0;
+        if (upd > 0 && upd > read) n++;
+      });
+      setUnreadChatCount(n);
+    }, () => {});
+  }, [user?.id]);
+
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -7421,7 +9358,40 @@ export default function App() {
     }
   };
 
+  // Open the chat for a job directly (assigned worker ↔ client); falls back to job details
+  const openJobChat = async (job) => {
+    const partnerId = job.userId === user.id ? job.assignedTo : job.userId;
+    if (!partnerId) { setSelectedJob(job); return; }
+    try {
+      const partnerDoc = await getDoc(doc(db, 'users', partnerId));
+      const newChatId = await getOrCreateChat(user.id, partnerId, job.id);
+      if (newChatId && partnerDoc.exists()) {
+        setActiveChatInfo({ chatId: newChatId, otherUser: { id: partnerId, ...partnerDoc.data() }, job });
+      } else {
+        setSelectedJob(job);
+      }
+    } catch { setSelectedJob(job); }
+  };
+
+  // A job can't be deleted while money is in play: the client still owes a payment,
+  // or a card payment was made but the worker's deposit hasn't settled yet (~7 días).
+  const PAYOUT_SETTLE_DAYS = 7;
+  const blockDeleteReason = (job) => {
+    if (job.paymentRequested && job.status === 'assigned') {
+      return 'Este trabajo tiene un pago pendiente. Realiza el pago antes de eliminarlo.';
+    }
+    if (job.paymentMethod === 'card' && job.status === 'completed') {
+      const ref = job.completedAt?.toDate?.() ?? (job.completedAt ? new Date(job.completedAt) : null);
+      if (ref && (Date.now() - ref.getTime()) < PAYOUT_SETTLE_DAYS * 86400000) {
+        return 'No puedes eliminar este trabajo hasta que el pago se deposite al trabajador. Esto puede tardar unos días hábiles.';
+      }
+    }
+    return null;
+  };
+
   const handleDeleteJob = async (job) => {
+    const blocked = blockDeleteReason(job);
+    if (blocked) { Alert.alert('No se puede eliminar', blocked); return; }
     Alert.alert(
       'Eliminar trabajo',
       '¿Estás seguro de eliminar este trabajo?',
@@ -7521,6 +9491,7 @@ export default function App() {
   const roleColor = isClient ? COLORS.blue : COLORS.accent;
   const roleIcon = isClient ? '👤' : '👷';
   const roleName = isClient ? 'Cliente' : 'Trabajador';
+  const homePending = isClient ? myJobs.filter(isPaymentPending) : [];
 
   const renderContent = () => {
     if (activeTab === 'browse') {
@@ -7528,10 +9499,6 @@ export default function App() {
         return (
           <>
             <View style={[styles.exploreTabs, { backgroundColor: activeColors.bg, borderBottomColor: activeColors.border }]}>
-              <TouchableOpacity style={[styles.exploreTab, { borderColor: activeColors.border, backgroundColor: activeColors.card }, exploreSection === 'listings' && styles.exploreTabActive]} onPress={() => { setExploreSection('listings'); setJobSearch(''); }}>
-                <Ionicons name={exploreSection === 'listings' ? 'briefcase' : 'briefcase-outline'} size={15} color={exploreSection === 'listings' ? COLORS.accent : activeColors.muted} />
-                <Text style={[styles.exploreTabText, { color: activeColors.muted }, exploreSection === 'listings' && styles.exploreTabTextActive]}>Trabajos</Text>
-              </TouchableOpacity>
               <TouchableOpacity style={[styles.exploreTab, { borderColor: activeColors.border, backgroundColor: activeColors.card }, exploreSection === 'workers' && styles.exploreTabActive]} onPress={() => { setExploreSection('workers'); setJobSearch(''); }}>
                 <Ionicons name={exploreSection === 'workers' ? 'people' : 'people-outline'} size={15} color={exploreSection === 'workers' ? COLORS.accent : activeColors.muted} />
                 <Text style={[styles.exploreTabText, { color: activeColors.muted }, exploreSection === 'workers' && styles.exploreTabTextActive]}>Trabajadores</Text>
@@ -7548,7 +9515,7 @@ export default function App() {
                 style={[styles.searchBarInput, { color: activeColors.text }]}
                 value={jobSearch}
                 onChangeText={setJobSearch}
-                placeholder={exploreSection === 'listings' ? 'Buscar trabajos...' : exploreSection === 'workers' ? 'Buscar trabajadores...' : 'Buscar empresas...'}
+                placeholder={exploreSection === 'workers' ? 'Buscar trabajadores...' : 'Buscar empresas...'}
                 placeholderTextColor={activeColors.muted}
                 returnKeyType="search"
                 clearButtonMode="while-editing"
@@ -7573,28 +9540,6 @@ export default function App() {
                 }
                 renderItem={({ item }) => <BusinessCard business={item} onPress={b => setSelectedWorker({ isBusiness: true, ...b })} />}
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.accent} />}
-              />
-            ) : exploreSection === 'listings' ? (
-              <FlatList
-                data={jobs.filter(j => !jobSearch || [j.title, j.description, j.location].filter(Boolean).some(f => f.toLowerCase().includes(jobSearch.toLowerCase())))}
-                keyExtractor={item => item.id}
-                contentContainerStyle={styles.jobList}
-                ListEmptyComponent={
-                  <View style={styles.emptyState}>
-                    <Text style={styles.emptyStateIcon}>📋</Text>
-                    <Text style={styles.emptyStateText}>{jobSearch ? 'Sin resultados para tu búsqueda' : 'No hay trabajos disponibles'}</Text>
-                  </View>
-                }
-                renderItem={({ item }) => (
-                  <JobCard
-                    job={item}
-                    onPress={setSelectedJob}
-                    showCreator={true}
-                  />
-                )}
-                refreshControl={
-                  <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.accent} />
-                }
               />
             ) : (
               <WorkersInlineList
@@ -7634,7 +9579,7 @@ export default function App() {
               </TouchableOpacity>
             )}
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 62 }} contentContainerStyle={styles.feedFilterBar}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 62, flexGrow: 0 }} contentContainerStyle={styles.feedFilterBar}>
             <TouchableOpacity style={[styles.filterChip, { backgroundColor: activeColors.card, borderColor: activeColors.border }, feedFilter === 'all' && styles.filterChipActive]} onPress={() => { feedListRef.current?.scrollTo({ y: 0, animated: false }); setFeedFilter('all'); }}>
               <Text style={[styles.filterChipText, { color: activeColors.muted }, feedFilter === 'all' && styles.filterChipTextActive]}>Todos</Text>
             </TouchableOpacity>
@@ -7653,18 +9598,47 @@ export default function App() {
             style={{ flex: 1, backgroundColor: activeColors.bg }}
             contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 20 }}
           >
-            {!bankingSetup && (
-              <TouchableOpacity
-                onPress={() => setShowBankingSetupFromFeed(true)}
-                style={{ backgroundColor: COLORS.yellow + '22', borderRadius: 12, borderWidth: 1, borderColor: COLORS.yellow + '55', padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}
-              >
-                <Ionicons name="alert-circle" size={20} color={COLORS.yellow} />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: COLORS.yellow, fontWeight: '700', fontSize: 13 }}>Cuenta de pagos no configurada</Text>
-                  <Text style={{ color: COLORS.yellow, fontSize: 12, opacity: 0.85 }}>Configura tu cuenta bancaria para cobrar trabajos con tarjeta. Toca aquí →</Text>
+            {(() => {
+              // Profile completeness nudge — hidden once everything is done
+              const checklist = [
+                { key: 'photo', done: !!user?.profileImage, label: 'Agrega tu foto de perfil', doneLabel: 'Foto de perfil', icon: 'camera-outline', onPress: () => setShowProfile(true) },
+                { key: 'bio', done: !!user?.bio, label: 'Describe tus servicios', doneLabel: 'Descripción de servicios', icon: 'document-text-outline', onPress: () => setShowProfile(true) },
+                { key: 'ine', done: user?.verificationStatus === 'verified' || user?.verificationStatus === 'pending', label: 'Verifica tu identidad (INE)', doneLabel: user?.verificationStatus === 'pending' ? 'INE en revisión' : 'Identidad verificada', icon: 'card-outline', onPress: () => setShowProfile(true) },
+                { key: 'bank', done: bankingSetup, label: 'Configura tu cuenta para cobrar', doneLabel: 'Cuenta de pagos lista', icon: 'cash-outline', onPress: () => setShowBankingSetupFromFeed(true) },
+              ];
+              const doneCount = checklist.filter(i => i.done).length;
+              if (doneCount === checklist.length) return null;
+              return (
+                <View style={{ backgroundColor: activeColors.card, borderRadius: 14, borderWidth: 1, borderColor: COLORS.accent + '44', padding: 14, marginBottom: 12 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <Text style={{ color: activeColors.text, fontWeight: '800', fontSize: 14 }}>Completa tu perfil</Text>
+                    <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 13 }}>{doneCount}/{checklist.length}</Text>
+                  </View>
+                  <View style={{ height: 6, borderRadius: 3, backgroundColor: activeColors.border, marginBottom: 12, overflow: 'hidden' }}>
+                    <View style={{ width: `${(doneCount / checklist.length) * 100}%`, height: '100%', backgroundColor: COLORS.accent, borderRadius: 3 }} />
+                  </View>
+                  <Text style={{ color: activeColors.muted, fontSize: 11, marginBottom: 10 }}>Los perfiles completos reciben más trabajos y generan más confianza.</Text>
+                  {checklist.map(item => (
+                    <TouchableOpacity
+                      key={item.key}
+                      onPress={item.done ? undefined : item.onPress}
+                      disabled={item.done}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 }}
+                    >
+                      <Ionicons
+                        name={item.done ? 'checkmark-circle' : item.icon}
+                        size={20}
+                        color={item.done ? COLORS.green : COLORS.accent}
+                      />
+                      <Text style={{ flex: 1, fontSize: 13, color: item.done ? activeColors.muted : activeColors.text, textDecorationLine: item.done ? 'line-through' : 'none' }}>
+                        {item.done ? item.doneLabel : item.label}
+                      </Text>
+                      {!item.done && <Ionicons name="chevron-forward" size={14} color={activeColors.muted} />}
+                    </TouchableOpacity>
+                  ))}
                 </View>
-              </TouchableOpacity>
-            )}
+              );
+            })()}
             {filteredJobs.length === 0 ? (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyStateIcon}>📋</Text>
@@ -7682,21 +9656,37 @@ export default function App() {
       const allJobs = [...myJobs, ...completedJobs];
       const activeClientJobs = allJobs.filter(j => j.status !== 'completed' && j.status !== 'cancelled');
       const doneClientJobs   = allJobs.filter(j => j.status === 'completed');
+      const pendingPaymentJobs = activeClientJobs.filter(isPaymentPending);
 
-      const listData = myJobFilter === 'all'
-        ? activeClientJobs
-        : myJobFilter === 'active'
-          ? activeClientJobs
-          : myJobFilter === 'completed'
-            ? doneClientJobs
-            : allJobs.filter(j => j.status === myJobFilter);
+      const listData =
+        myJobFilter === 'completed' ? doneClientJobs :
+        myJobFilter === 'pending_payment' ? pendingPaymentJobs :
+        myJobFilter === 'open' ? activeClientJobs.filter(j => j.status === 'open') :
+        activeClientJobs; // 'all' / 'active'
 
       const showDoneSection = myJobFilter === 'all' && doneClientJobs.length > 0;
 
       return (
         <View style={{ flex: 1 }}>
+          {/* Pending-payment alert — money the client still owes a worker */}
+          {pendingPaymentJobs.length > 0 && (
+            <TouchableOpacity
+              onPress={() => setMyJobFilter('pending_payment')}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 16, marginTop: 10, padding: 12, borderRadius: 12, backgroundColor: COLORS.accent + '18', borderWidth: 1, borderColor: COLORS.accent + '55' }}
+            >
+              <Ionicons name="alert-circle" size={20} color={COLORS.accent} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 13 }}>
+                  {pendingPaymentJobs.length === 1 ? 'Tienes 1 pago pendiente' : `Tienes ${pendingPaymentJobs.length} pagos pendientes`}
+                </Text>
+                <Text style={{ color: activeColors.muted, fontSize: 11, marginTop: 1 }}>Toca para ver y completar el pago al trabajador.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.accent} />
+            </TouchableOpacity>
+          )}
+
           <ScrollView horizontal showsHorizontalScrollIndicator={false}
-            style={{ height: 62 }} contentContainerStyle={styles.filterBar}>
+            style={{ height: 62, flexGrow: 0 }} contentContainerStyle={styles.filterBar}>
             {[
               ['all',             'list-outline',            'list',             'Todos'],
               ['open',            'radio-button-on-outline', 'radio-button-on',  'Abiertos'],
@@ -7746,6 +9736,7 @@ export default function App() {
                     key={item.id}
                     job={item}
                     onPress={setSelectedJob}
+                    onLongPress={setActionSheetJob}
                     showMenu={false}
                     onEdit={() => {}}
                     onDelete={handleDeleteJob}
@@ -7757,6 +9748,7 @@ export default function App() {
               <JobCard
                 job={item}
                 onPress={setSelectedJob}
+                onLongPress={setActionSheetJob}
                 showMenu={item.status !== 'completed'}
                 onEdit={(job) => { setEditingJob(job); setShowPostJob(true); }}
                 onDelete={handleDeleteJob}
@@ -7767,6 +9759,15 @@ export default function App() {
             }
           />
         </View>
+      );
+    }
+
+    if (activeTab === 'chats') {
+      return (
+        <ChatsTab
+          user={user}
+          onOpenChat={(c) => setActiveChatInfo({ chatId: c.id, otherUser: { id: c.otherId, name: c.otherName }, job: c.job })}
+        />
       );
     }
 
@@ -7802,7 +9803,7 @@ export default function App() {
         <View style={{ flex: 1 }}>
           {/* Filter + sort bar */}
           <ScrollView horizontal showsHorizontalScrollIndicator={false}
-            style={{ height: 62 }} contentContainerStyle={styles.filterBar}>
+            style={{ height: 62, flexGrow: 0 }} contentContainerStyle={styles.filterBar}>
             {[
               ['all',       'list-outline',             'list',              'Todos'],
               ['open',      'radio-button-on-outline',  'radio-button-on',   'Abiertos'],
@@ -7850,7 +9851,7 @@ export default function App() {
                   <Text style={[styles.sectionHeader, { color: activeColors.text }]}>En progreso ({filteredActive.length})</Text>
                 )}
                 {filteredActive.map(item => (
-                  <TouchableOpacity key={item.id} onPress={() => setSelectedJob(item)} style={[styles.bidJobCard, { backgroundColor: activeColors.card, borderColor: activeColors.border }]}>
+                  <TouchableOpacity key={item.id} onPress={() => setSelectedJob(item)} onLongPress={() => setActionSheetJob(item)} delayLongPress={300} style={[styles.bidJobCard, { backgroundColor: activeColors.card, borderColor: activeColors.border }]}>
                     <View style={styles.jobCardHeader}>
                       <ServiceIcon type={item.type} size={48} />
                       <View style={{ flex: 1 }}>
@@ -7865,8 +9866,10 @@ export default function App() {
                       <StatusBadge status={item.status} />
                     </View>
                     <View style={styles.myBidInfo}>
-                      <Text style={[styles.myBidLabel, { color: activeColors.muted }]}>Tu propuesta:</Text>
-                      <Text style={styles.myBidPrice}>${item.myBid?.price}</Text>
+                      <Text style={[styles.myBidLabel, { color: activeColors.muted }]}>{item.assignedPrice ? 'Precio acordado:' : 'Tu estimado:'}</Text>
+                      {item.assignedPrice
+                        ? <PriceText value={item.assignedPrice} style={styles.myBidPrice} />
+                        : <Text style={styles.myBidPrice}>{fmtEstimate(item.myBid?.estMin ?? item.myBid?.price, item.myBid?.estMax)}</Text>}
                     </View>
                   </TouchableOpacity>
                 ))}
@@ -7876,7 +9879,7 @@ export default function App() {
                       Completados ({filteredDone.length})
                     </Text>
                     {filteredDone.map(item => (
-                      <TouchableOpacity key={item.id} onPress={() => setSelectedJob(item)} style={[styles.bidJobCard, { opacity: 0.8, backgroundColor: activeColors.card, borderColor: activeColors.border }]}>
+                      <TouchableOpacity key={item.id} onPress={() => setSelectedJob(item)} onLongPress={() => setActionSheetJob(item)} delayLongPress={300} style={[styles.bidJobCard, { opacity: 0.8, backgroundColor: activeColors.card, borderColor: activeColors.border }]}>
                         <View style={styles.jobCardHeader}>
                           <ServiceIcon type={item.type} size={48} />
                           <View style={{ flex: 1 }}>
@@ -7886,8 +9889,8 @@ export default function App() {
                           <StatusBadge status={item.status} />
                         </View>
                         <View style={styles.myBidInfo}>
-                          <Text style={[styles.myBidLabel, { color: activeColors.muted }]}>Tu propuesta:</Text>
-                          <Text style={styles.myBidPrice}>${item.myBid?.price}</Text>
+                          <Text style={[styles.myBidLabel, { color: activeColors.muted }]}>Precio final:</Text>
+                          <PriceText value={item.assignedPrice ?? item.myBid?.price} style={styles.myBidPrice} />
                         </View>
                       </TouchableOpacity>
                     ))}
@@ -7923,9 +9926,6 @@ export default function App() {
               )}
             </View>
           </TouchableOpacity>
-          <TouchableOpacity onPress={handleLogout}>
-            <Text style={styles.logoutText}>Salir</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -7937,6 +9937,25 @@ export default function App() {
           {user.email}
         </Text>
       </View>
+
+      {/* Permanent pending-payment banner — stays until the client pays */}
+      {homePending.length > 0 && (
+        <TouchableOpacity
+          onPress={() => setSelectedJob(homePending[0])}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 12, backgroundColor: COLORS.accent + '1A', borderBottomWidth: 1, borderBottomColor: COLORS.accent + '44' }}
+        >
+          <Ionicons name="alert-circle" size={20} color={COLORS.accent} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: COLORS.accent, fontWeight: '800', fontSize: 13 }}>
+              {homePending.length === 1 ? 'Tienes un pago pendiente' : `Tienes ${homePending.length} pagos pendientes`}
+            </Text>
+            <Text style={{ color: activeColors.muted, fontSize: 11 }} numberOfLines={1}>
+              {homePending.length === 1 ? `"${homePending[0].title}" — toca para pagar al trabajador` : 'Toca para completar el pago al trabajador'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={COLORS.accent} />
+        </TouchableOpacity>
+      )}
 
       {renderContent()}
 
@@ -7975,10 +9994,25 @@ export default function App() {
             style={styles.navButton}
             onPress={() => setActiveTab('my-bids')}
           >
-            <Ionicons name={activeTab === 'my-bids' ? 'chatbubbles' : 'chatbubbles-outline'} size={24} color={activeTab === 'my-bids' ? COLORS.accent : activeColors.muted} />
+            <Ionicons name={activeTab === 'my-bids' ? 'reader' : 'reader-outline'} size={24} color={activeTab === 'my-bids' ? COLORS.accent : activeColors.muted} />
             <Text style={[styles.navText, { color: activeColors.muted }, activeTab === 'my-bids' && styles.navTextActive]}>Mis propuestas</Text>
           </TouchableOpacity>
         )}
+
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => setActiveTab('chats')}
+        >
+          <View>
+            <Ionicons name={activeTab === 'chats' ? 'chatbubbles' : 'chatbubbles-outline'} size={24} color={activeTab === 'chats' ? COLORS.accent : activeColors.muted} />
+            {unreadChatCount > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>{unreadChatCount}</Text>
+              </View>
+            )}
+          </View>
+          <Text style={[styles.navText, { color: activeColors.muted }, activeTab === 'chats' && styles.navTextActive]}>Chats</Text>
+        </TouchableOpacity>
 
         <TouchableOpacity
           style={styles.navButton}
@@ -8002,6 +10036,26 @@ export default function App() {
               if (d.exists()) setSelectedWorker({ id: d.id, ...d.data(), _parentJob: savedJob });
             });
           }}
+          onViewClientProfile={(clientProfile) => setSelectedClientProfile(clientProfile)}
+        />
+      )}
+
+      {actionSheetJob && (
+        <JobActionSheet
+          job={actionSheetJob}
+          user={user}
+          onClose={() => setActionSheetJob(null)}
+          onOpenDetails={(job) => setSelectedJob(job)}
+          onChat={(job) => openJobChat(job)}
+          onEdit={(job) => { setEditingJob(job); setShowPostJob(true); }}
+          onDelete={(job) => handleDeleteJob(job)}
+        />
+      )}
+
+      {selectedClientProfile && (
+        <ClientProfileModal
+          client={selectedClientProfile}
+          onClose={() => setSelectedClientProfile(null)}
         />
       )}
 
@@ -8058,6 +10112,33 @@ export default function App() {
           userName={user.name}
           onDone={() => setShowBankingSetupFromFeed(false)}
         />
+      )}
+
+      {/* Chat opened from the Chats tab */}
+      {activeChatInfo && (
+        <ChatScreen
+          chatId={activeChatInfo.chatId}
+          otherUser={activeChatInfo.otherUser}
+          job={activeChatInfo.job}
+          currentUser={user}
+          onClose={() => setActiveChatInfo(null)}
+        />
+      )}
+
+      {/* Biometric app lock — covers everything until unlocked */}
+      {biometricLocked && (
+        <Modal visible animationType="fade" statusBarTranslucent>
+          <SafeAreaView style={{ flex: 1, backgroundColor: activeColors.bg, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
+            <Ionicons name="lock-closed" size={64} color={COLORS.accent} />
+            <Text style={{ color: activeColors.text, fontSize: 22, fontWeight: '800', marginTop: 24 }}>Taskly está bloqueado</Text>
+            <Text style={{ color: activeColors.muted, fontSize: 14, textAlign: 'center', marginTop: 8, marginBottom: 32 }}>
+              Usa Face ID, Touch ID o tu huella para continuar.
+            </Text>
+            <TouchableOpacity style={[styles.primaryButton, { paddingHorizontal: 40 }]} onPress={promptBiometricUnlock}>
+              <Text style={styles.primaryButtonText}>Desbloquear</Text>
+            </TouchableOpacity>
+          </SafeAreaView>
+        </Modal>
       )}
     </SafeAreaView>
     </ThemeContext.Provider>
@@ -8223,9 +10304,10 @@ const styles = StyleSheet.create({
   workerBio: { fontSize: 12, color: COLORS.text, marginTop: 4, lineHeight: 16 },
   workerTopReview: {
     marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   workerReviewText: {
     fontSize: 11,
@@ -8279,6 +10361,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 10,
     marginTop: 8,
+    marginBottom: 14,
     alignItems: 'center',
   },
   
@@ -8760,7 +10843,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 16,
   },
-  jobDetailHeader: { flexDirection: 'row', gap: 14, marginBottom: 20 },
+  jobDetailHeader: { flexDirection: 'row', gap: 14, marginBottom: 20, borderRadius: 14, borderWidth: 1, padding: 14 },
   jobDetailTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text, marginBottom: 6 },
   jobDetailLocation: { fontSize: 13, color: COLORS.muted },
   jobDetailCreator: { fontSize: 12, color: COLORS.accent, marginTop: 2 },
@@ -8790,7 +10873,7 @@ const styles = StyleSheet.create({
   infoText: { fontSize: 12, color: COLORS.text, lineHeight: 18 },
   infoBox: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: COLORS.border },
   
-  bidsSection: { marginBottom: 20 },
+  bidsSection: { borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 20 },
   bidCard: {
     backgroundColor: COLORS.card,
     borderRadius: 14,
@@ -8804,7 +10887,7 @@ const styles = StyleSheet.create({
   bidUserEmail: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
   bidPrice: { fontSize: 18, fontWeight: '800', color: COLORS.accent },
   bidMessage: { fontSize: 13, color: COLORS.text, lineHeight: 18 },
-  bidFormSection: { marginBottom: 40 },
+  bidFormSection: { borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 40 },
   
   alreadyBidBox: {
     backgroundColor: COLORS.green + '22',
@@ -9039,30 +11122,31 @@ const styles = StyleSheet.create({
   
   workersList: { padding: 16, paddingBottom: 120 },
   
-  notificationsList: { padding: 16 },
+  notificationsList: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 24 },
   notificationCard: {
     backgroundColor: COLORS.card,
     borderRadius: 14,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginBottom: 12,
+    marginBottom: 10,
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
   },
-  notificationUnread: { borderColor: COLORS.accent },
   notificationIconWrap: {
-    width: 40, height: 40, borderRadius: 20,
-    justifyContent: 'center', alignItems: 'center', marginRight: 4,
+    width: 38, height: 38, borderRadius: 19,
+    justifyContent: 'center', alignItems: 'center', marginTop: 1,
   },
-  notificationMessage: { fontSize: 14, color: COLORS.text, lineHeight: 20 },
-  notificationTime: { fontSize: 11, color: COLORS.muted, marginTop: 4 },
+  notificationTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  notificationTitle: { fontSize: 15, letterSpacing: -0.2 },
+  notificationBody: { fontSize: 13, lineHeight: 18, marginTop: 2 },
+  notificationTime: { fontSize: 12, color: COLORS.muted, marginLeft: 8 },
   notificationArrow: { fontSize: 18, color: COLORS.muted, marginLeft: 8 },
   unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: COLORS.accent,
   },
   
@@ -9214,6 +11298,35 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'flex-end',
   },
+  actionSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+    padding: 12,
+  },
+  actionSheet: {
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingTop: 8,
+    paddingBottom: 8,
+    marginBottom: 8,
+  },
+  actionSheetHandle: {
+    width: 40, height: 5, borderRadius: 3,
+    alignSelf: 'center', marginTop: 4, marginBottom: 10, opacity: 0.6,
+  },
+  actionSheetTitle: { fontSize: 16, fontWeight: '800', paddingHorizontal: 18 },
+  actionSheetSubtitle: { fontSize: 13, fontWeight: '600', paddingHorizontal: 18, marginTop: 2, marginBottom: 6 },
+  actionSheetRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    paddingVertical: 15, paddingHorizontal: 18, borderTopWidth: 1,
+  },
+  actionSheetRowText: { fontSize: 15, fontWeight: '600' },
+  actionSheetCancel: {
+    marginTop: 8, marginHorizontal: 12, paddingVertical: 13,
+    borderRadius: 14, borderWidth: 1, alignItems: 'center',
+  },
+  actionSheetCancelText: { fontSize: 15, fontWeight: '700' },
   scheduleContent: {
     backgroundColor: COLORS.card,
     borderTopLeftRadius: 24,

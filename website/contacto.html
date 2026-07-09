@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Contacta al equipo de Taskly: soporte, dudas sobre privacidad, registro de trabajadores y cobertura en Monterrey y su área metropolitana.">
+<title>Contacto — Taskly</title>
+<link rel="icon" type="image/png" href="/favicon.png?v=2">
+<link rel="canonical" href="https://taskly.com.mx/contacto">
+<meta property="og:title" content="Contacto — Taskly">
+<meta property="og:description" content="Escríbenos: soporte, privacidad, registro de trabajadores y cobertura en Monterrey.">
+<meta property="og:image" content="https://taskly.com.mx/logo-512.png">
+<meta property="og:url" content="https://taskly.com.mx/contacto">
+<meta property="og:type" content="website">
+<!-- Google Analytics (GA4) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-Q2KNW2ECNX"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-Q2KNW2ECNX', { anonymize_ip: true });
+</script>
+<style>
+  :root {
+    --bg: #0A0A0A;
+    --card: #151515;
+    --accent: #FF6B35;
+    --text: #F5F5F5;
+    --muted: #888;
+    --border: #252525;
+    --radius: 16px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.6;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: inherit; text-decoration: none; }
+
+  .container {
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+
+  /* ───────────── Nav ───────────── */
+  .nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    background: rgba(10, 10, 10, 0.82);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 64px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.3rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+
+  .logo-mark { width: 32px; height: 32px; border-radius: 8px; display: block; }
+
+  .nav-links {
+    display: flex;
+    gap: 28px;
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  .nav-links a { transition: color 0.2s ease; padding: 6px 0; }
+  .nav-links a:hover, .nav-links a:focus-visible { color: var(--text); }
+  .nav-links a.active { color: var(--accent); }
+
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  /* Hamburger toggle — hidden on desktop, shown on mobile */
+  .nav-toggle {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  .nav-toggle span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    margin: 0 auto;
+    background: var(--text);
+    border-radius: 2px;
+    transition: transform 0.25s ease, opacity 0.2s ease;
+  }
+
+  .nav-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .nav-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+  .nav-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ───────────── Page head ───────────── */
+  .page-head {
+    position: relative;
+    padding: 150px 0 60px;
+    text-align: center;
+    overflow: hidden;
+  }
+
+  .page-head::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 60% 70% at 50% 0%, rgba(255, 107, 53, 0.16), transparent 70%);
+    pointer-events: none;
+  }
+
+  .page-head .kicker {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  .page-head h1 {
+    font-size: clamp(2rem, 6vw, 3.2rem);
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 14px;
+  }
+
+  .page-head p {
+    color: var(--muted);
+    max-width: 520px;
+    margin: 0 auto;
+    font-size: 1.05rem;
+  }
+
+  /* ───────────── Contact cards ───────────── */
+  .contact-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+    padding: 30px 0 90px;
+  }
+
+  .contact-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 30px 26px;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.25s ease, border-color 0.25s ease;
+  }
+
+  .contact-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(255, 107, 53, 0.45);
+  }
+
+  .contact-icon {
+    width: 52px; height: 52px;
+    border-radius: 13px;
+    background: linear-gradient(135deg, rgba(255,107,53,0.16), rgba(255,107,53,0.05));
+    border: 1px solid rgba(255, 107, 53, 0.25);
+    display: grid;
+    place-items: center;
+    font-size: 1.5rem;
+    margin-bottom: 18px;
+  }
+
+  .contact-card h2 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .contact-card p {
+    font-size: 0.92rem;
+    color: var(--muted);
+    margin-bottom: 18px;
+    flex-grow: 1;
+  }
+
+  .contact-card .link {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .contact-card .link:hover { text-decoration: underline; }
+
+  .areas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .area-tag {
+    font-size: 0.82rem;
+    color: var(--text);
+    background: rgba(255, 107, 53, 0.1);
+    border: 1px solid rgba(255, 107, 53, 0.25);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+
+  .response-note {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.88rem;
+    padding-bottom: 70px;
+  }
+
+  .response-note strong { color: var(--text); }
+
+  /* ───────────── Footer ───────────── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 44px 0 54px;
+    background: var(--bg);
+  }
+
+  .footer-inner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .footer-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 22px;
+    font-size: 0.88rem;
+    color: var(--muted);
+  }
+
+  .footer-links a:hover, .footer-links a:focus-visible { color: var(--text); }
+
+  .footer-copy {
+    width: 100%;
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: #555;
+  }
+
+  /* ───────────── Responsive ───────────── */
+  @media (max-width: 720px) {
+    .contact-grid { grid-template-columns: 1fr; }
+    .page-head { padding: 120px 0 40px; }
+
+    .nav-toggle { display: flex; }
+
+    .nav-links {
+      position: absolute;
+      top: 64px;
+      left: 0;
+      right: 0;
+      flex-direction: column;
+      gap: 0;
+      background: rgba(10, 10, 10, 0.97);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 0;
+      font-size: 1rem;
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: max-height 0.3s ease, opacity 0.25s ease;
+    }
+
+    .nav-links.open {
+      max-height: 320px;
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .nav-links a {
+      padding: 14px 24px;
+      width: 100%;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .nav-links a:last-child { border-bottom: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .contact-card, .contact-card:hover { transform: none; transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ───────────── Nav ───────────── -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="/" class="logo" aria-label="Taskly — inicio">
+      <img class="logo-mark" src="/logo-96.png" alt="" width="32" height="32">
+      Taskly
+    </a>
+    <button class="nav-toggle" id="navToggle" aria-label="Abrir menú" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="nav-links" id="navLinks">
+      <a href="/#como-funciona">Cómo funciona</a>
+      <a href="/#servicios">Servicios</a>
+      <a href="/#trabajadores">Trabajadores</a>
+      <a href="/contacto" class="active">Contacto</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ───────────── Page head ───────────── -->
+<header class="page-head">
+  <div class="container">
+    <div class="kicker">Contacto</div>
+    <h1>Estamos para ayudarte</h1>
+    <p>¿Dudas, problemas con un servicio o quieres unirte como trabajador? Escríbenos y te respondemos lo antes posible.</p>
+  </div>
+</header>
+
+<!-- ───────────── Contact cards ───────────── -->
+<main class="container">
+  <div class="contact-grid">
+    <div class="contact-card">
+      <div class="contact-icon">📧</div>
+      <h2>Soporte general</h2>
+      <p>Dudas sobre la app, problemas con un trabajo, pagos o tu cuenta. Cuéntanos qué pasó y te ayudamos a resolverlo.</p>
+      <a class="link" href="mailto:soporte@taskly.com.mx?subject=Soporte%20Taskly">soporte@taskly.com.mx</a>
+    </div>
+    <div class="contact-card">
+      <div class="contact-icon">🛠️</div>
+      <h2>Quiero ser trabajador</h2>
+      <p>Plomero, electricista, carpintero o técnico: déjanos tus datos y oficio, y te avisamos en cuanto abra el registro de trabajadores.</p>
+      <a class="link" href="mailto:soporte@taskly.com.mx?subject=Quiero%20ser%20trabajador%20en%20Taskly">Escríbenos con el asunto "Quiero ser trabajador"</a>
+    </div>
+    <div class="contact-card">
+      <div class="contact-icon">🔐</div>
+      <h2>Privacidad y datos personales</h2>
+      <p>Para ejercer tus derechos ARCO (acceso, rectificación, cancelación u oposición) o solicitar la eliminación de tu cuenta y datos.</p>
+      <a class="link" href="mailto:soporte@taskly.com.mx?subject=Derechos%20ARCO">Enviar solicitud ARCO</a>
+    </div>
+    <div class="contact-card">
+      <div class="contact-icon">📍</div>
+      <h2>Zona de cobertura</h2>
+      <p>Taskly opera en Monterrey y su área metropolitana. Si tu ciudad no aparece aquí, escríbenos — nos ayuda a decidir a dónde llegar después.</p>
+      <div class="areas">
+        <span class="area-tag">Monterrey</span>
+        <span class="area-tag">San Pedro</span>
+        <span class="area-tag">Guadalupe</span>
+        <span class="area-tag">Santa Catarina</span>
+        <span class="area-tag">Escobedo</span>
+        <span class="area-tag">San Nicolás</span>
+      </div>
+    </div>
+  </div>
+  <p class="response-note">Respondemos en menos de <strong>24 horas hábiles</strong> · Lunes a sábado, 9:00–19:00 (hora de Monterrey)</p>
+</main>
+
+<!-- ───────────── Footer ───────────── -->
+<footer>
+  <div class="container footer-inner">
+    <a href="/" class="logo" aria-label="Taskly — inicio">
+      <img class="logo-mark" src="/logo-96.png" alt="" width="32" height="32">
+      Taskly
+    </a>
+    <div class="footer-links">
+      <a href="/contacto">Contacto</a>
+      <a href="/privacidad">Aviso de Privacidad</a>
+      <a href="/terminos">Términos y Condiciones</a>
+      <a href="mailto:soporte@taskly.com.mx">soporte@taskly.com.mx</a>
+    </div>
+    <div class="footer-copy">© 2026 Taskly. Todos los derechos reservados. Hecho en Monterrey, Nuevo León, México.</div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var navToggle = document.getElementById("navToggle");
+  var navLinks = document.getElementById("navLinks");
+  if (!navToggle || !navLinks) return;
+  var closeMenu = function () {
+    navLinks.classList.remove("open");
+    navToggle.setAttribute("aria-expanded", "false");
+    navToggle.setAttribute("aria-label", "Abrir menú");
+  };
+  navToggle.addEventListener("click", function () {
+    var isOpen = navLinks.classList.toggle("open");
+    navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    navToggle.setAttribute("aria-label", isOpen ? "Cerrar menú" : "Abrir menú");
+  });
+  navLinks.querySelectorAll("a").forEach(function (a) {
+    a.addEventListener("click", closeMenu);
+  });
+  document.addEventListener("click", function (e) {
+    if (navLinks.classList.contains("open") && !e.target.closest(".nav")) closeMenu();
+  });
+})();
+</script>
+
+</body>
+</html>

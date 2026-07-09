@@ -1,0 +1,163 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+    function isAuth() { return request.auth != null; }
+    function isOwner(uid) { return isAuth() && request.auth.uid == uid; }
+    function isWorker() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'worker';
+    }
+    function isClient() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'client';
+    }
+    function isAdmin() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // ── users ─────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isAuth();
+      // Cannot self-assign admin at signup
+      allow create: if isOwner(userId) && request.resource.data.isAdmin != true;
+      // Owner can edit their own profile, but can never grant themselves admin
+      // and can only move verificationStatus to 'pending' (admin sets 'verified')
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isAdmin']) &&
+        (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus']) ||
+          request.resource.data.verificationStatus == 'pending'
+        )
+      );
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ── jobs ──────────────────────────────────────────────────────────────────
+    match /jobs/{jobId} {
+      allow read: if isAuth();
+      // Only clients can create jobs
+      allow create: if isClient() && request.resource.data.userId == request.auth.uid;
+      // Owner and the assigned worker manage the job; other workers can only
+      // touch bids and schedule proposals
+      allow update: if isAuth() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.assignedTo == request.auth.uid ||
+        (isWorker() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bids', 'scheduledTime', 'paymentMethod'])) ||
+        isAdmin()
+      );
+      allow delete: if isAuth() && (
+        resource.data.userId == request.auth.uid || isAdmin()
+      );
+
+      // Exact address — only the job owner and the assigned worker (or admin) may read it;
+      // only the owner (client) writes it. Kept out of the job doc so it isn't readable by
+      // every authenticated user.
+      match /private/{docId} {
+        function parentJob() { return get(/databases/$(database)/documents/jobs/$(jobId)).data; }
+        allow read:  if isAuth() && (parentJob().userId == request.auth.uid || parentJob().assignedTo == request.auth.uid || isAdmin());
+        allow write: if isAuth() && (parentJob().userId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // ── notifications ─────────────────────────────────────────────────────────
+    match /notifications/{notifId} {
+      allow read: if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isAuth();
+      allow update: if isAuth() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ── chats ─────────────────────────────────────────────────────────────────
+    match /chats/{chatId} {
+      allow get:    if isAuth() && request.auth.uid in resource.data.participants;
+      // Listing requires a query that only returns the caller's own chats
+      allow list:   if isAuth() && request.auth.uid in resource.data.participants;
+      allow create: if isAuth() && request.auth.uid in request.resource.data.participants;
+      allow update: if isAuth() && request.auth.uid in resource.data.participants;
+      allow delete: if isAuth() && request.auth.uid in resource.data.participants;
+    }
+
+    // ── messages ──────────────────────────────────────────────────────────────
+    match /messages/{msgId} {
+      allow read: if isAuth() && (
+        exists(/databases/$(database)/documents/chats/$(resource.data.chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(resource.data.chatId)).data.participants
+      );
+      // Sender must be the caller AND a participant of the chat
+      allow create: if isAuth() && request.resource.data.senderId == request.auth.uid &&
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(request.resource.data.chatId)).data.participants;
+      allow update: if isAuth() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+        exists(/databases/$(database)/documents/chats/$(resource.data.chatId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(resource.data.chatId)).data.participants;
+      // Sender, any chat participant (post-completion cleanup), or admin
+      allow delete: if isAuth() && (
+        resource.data.senderId == request.auth.uid ||
+        isAdmin() ||
+        (
+          exists(/databases/$(database)/documents/chats/$(resource.data.chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(resource.data.chatId)).data.participants
+        )
+      );
+    }
+
+    // ── ratings ───────────────────────────────────────────────────────────────
+    match /ratings/{ratingId} {
+      allow read: if isAuth();
+      allow create: if isClient();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ── clientRatings (visible to workers only) ───────────────────────────────
+    match /clientRatings/{ratingId} {
+      allow read: if isWorker() || isAdmin();
+      allow create: if isWorker();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ── reports ───────────────────────────────────────────────────────────────
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuth();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── crashReports ──────────────────────────────────────────────────────────
+    match /crashReports/{reportId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ── businesses ────────────────────────────────────────────────────────────
+    match /businesses/{businessId} {
+      allow read: if isAuth();
+      // Creator must be the owner and cannot self-approve at creation
+      allow create: if isAuth() &&
+        request.resource.data.ownerId == request.auth.uid &&
+        request.resource.data.verificationStatus == 'pending';
+      // Admin: anything. Owner: anything except self-approving or transferring.
+      // Other authenticated users: only memberIds (join / leave the team).
+      allow update: if isAdmin() || (
+        isAuth() && resource.data.ownerId == request.auth.uid &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus', 'ownerId'])
+      ) || (
+        isAuth() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds'])
+      );
+      allow delete: if (isAuth() && resource.data.ownerId == request.auth.uid) || isAdmin();
+    }
+
+    // ── disputes ──────────────────────────────────────────────────────────────
+    match /disputes/{disputeId} {
+      allow read: if isAdmin() || (isAuth() && resource.data.reporterId == request.auth.uid);
+      allow create: if isAuth() && request.resource.data.reporterId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+  }
+}

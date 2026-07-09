@@ -16,6 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.taskly.app",
+      "usesAppleSignIn": true,
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
           {
@@ -46,7 +47,8 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Taskly necesita tu ubicación para coordinar los servicios a domicilio.",
         "NSPhotoLibraryUsageDescription": "Taskly necesita acceso a tu galería para subir fotos del trabajo.",
         "NSCameraUsageDescription": "Taskly necesita tu cámara para tomar fotos del trabajo.",
-        "NSUserNotificationsUsageDescription": "Taskly envía notificaciones sobre propuestas, mensajes y actualizaciones de tus trabajos."
+        "NSUserNotificationsUsageDescription": "Taskly envía notificaciones sobre propuestas, mensajes y actualizaciones de tus trabajos.",
+        "NSFaceIDUsageDescription": "Taskly usa Face ID para desbloquear la app de forma segura."
       }
     },
     "android": {
@@ -94,13 +96,20 @@
         }
       ],
       [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Taskly usa Face ID para desbloquear la app de forma segura."
+        }
+      ],
+      [
         "@stripe/stripe-react-native",
         {
           "merchantIdentifier": "merchant.com.taskly.app",
           "enableGooglePay": true
         }
       ],
-      "expo-video"
+      "expo-video",
+      "@sentry/react-native"
     ]
   }
 }

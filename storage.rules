@@ -1,0 +1,49 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Profile images — owner can read/write; everyone authenticated can read
+    match /profiles/{userId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId
+        && request.resource.size < 5 * 1024 * 1024   // 5 MB max
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // Job media (images + videos) — any authenticated user can read; any authenticated user can write
+    // Delete is separate: size/type checks reference request.resource, which is null on delete
+    match /jobs/{jobId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow delete: if request.auth != null;
+      allow create, update: if request.auth != null
+        && (
+          (request.resource.contentType.matches('image/.*') && request.resource.size < 10 * 1024 * 1024)  // images: 10 MB
+          || (request.resource.contentType.matches('video/.*') && request.resource.size < 150 * 1024 * 1024) // videos: 150 MB
+        );
+    }
+
+    // Business logos & ownership proofs — owner writes; logos visible to any
+    // authenticated user, ownership proofs only to the owner and admins
+    match /businesses/{userId}/{fileName} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        fileName.matches('logo_.*') ||
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin == true
+      );
+      allow write: if request.auth != null && request.auth.uid == userId
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // INE / ID verification uploads — owner read/write; admin read
+    match /verification/{userId}/{allPaths=**} {
+      allow read: if request.auth != null && (
+        request.auth.uid == userId ||
+        firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin == true
+      );
+      allow write: if request.auth != null && request.auth.uid == userId
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}
