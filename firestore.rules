@@ -25,12 +25,22 @@ service cloud.firestore {
       allow create: if isOwner(userId) && request.resource.data.isAdmin != true;
       // Owner can edit their own profile, but can never grant themselves admin
       // and can only move verificationStatus to 'pending' (admin sets 'verified')
+      // Owner can edit their own profile but never grant themselves admin, never
+      // self-verify (only admin sets 'verified' — owner may set 'pending'/'unverified'),
+      // and — crucially — a verified user cannot change their display name while staying
+      // verified: the name must match the INE, so changing it drops verification.
       allow update: if isAdmin() || (
         isOwner(userId) &&
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isAdmin']) &&
         (
           !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus']) ||
-          request.resource.data.verificationStatus == 'pending'
+          request.resource.data.verificationStatus == 'pending' ||
+          request.resource.data.verificationStatus == 'unverified'
+        ) &&
+        (
+          resource.data.verificationStatus != 'verified' ||
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['name']) ||
+          request.resource.data.verificationStatus != 'verified'
         )
       );
       allow delete: if isOwner(userId) || isAdmin();

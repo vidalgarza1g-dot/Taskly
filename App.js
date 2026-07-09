@@ -6746,6 +6746,7 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
   const status = userProfile?.verificationStatus || 'unverified';
   const [ineImages, setIneImages] = useState({ front: null, back: null });
   const [selfie, setSelfie] = useState(null);
+  const [legalName, setLegalName] = useState(userProfile?.name || '');
   const [uploading, setUploading] = useState(false);
 
   const pickIne = async (side) => {
@@ -6779,6 +6780,10 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
   };
 
   const submitVerification = async () => {
+    if (legalName.trim().length < 4) {
+      Alert.alert('Falta tu nombre', 'Escribe tu nombre completo tal como aparece en tu INE.');
+      return;
+    }
     if (!ineImages.front || !ineImages.back) {
       Alert.alert('Faltan imágenes', 'Sube el frente y reverso de tu INE.');
       return;
@@ -6794,6 +6799,7 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
       const selfieUrl = await uploadImage(selfie, `verification/${userId}/selfie.jpg`);
       await updateDoc(doc(db, 'users', userId), {
         verificationStatus: 'pending',
+        legalName: legalName.trim(),
         ineImages: { front: frontUrl, back: backUrl, selfie: selfieUrl },
         verificationRequestedAt: serverTimestamp(),
       });
@@ -6829,7 +6835,20 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
 
       {status === 'unverified' && (
         <>
-          <Text style={[styles.formLabel, { marginTop: 12 }]}>SUBE TU INE</Text>
+          <Text style={[styles.formLabel, { marginTop: 12 }]}>NOMBRE COMPLETO (como aparece en tu INE)</Text>
+          <TextInput
+            style={[styles.input, { backgroundColor: C.card, color: C.text, borderColor: C.border }]}
+            placeholder="Ej: Juan Carlos Pérez López"
+            placeholderTextColor={C.muted}
+            value={legalName}
+            onChangeText={setLegalName}
+            autoCapitalize="words"
+          />
+          <Text style={{ color: C.muted, fontSize: 12, lineHeight: 17, marginTop: 4 }}>
+            Debe coincidir exactamente con tu INE. Al aprobarse tu verificación, este será el nombre que se muestre en tu cuenta.
+          </Text>
+
+          <Text style={[styles.formLabel, { marginTop: 16 }]}>SUBE TU INE</Text>
           <View style={{ flexDirection: 'row', gap: 12 }}>
             <TouchableOpacity style={[styles.ineImageBox, { backgroundColor: C.card, borderColor: C.border }, ineImages.front && styles.ineImageBoxDone]} onPress={() => pickIne('front')}>
               {ineImages.front
@@ -7018,21 +7037,23 @@ function AdminPanelModal({ visible, onClose }) {
     }
   };
 
-  const handleVerdict = async (userId, userName, verdict) => {
+  const handleVerdict = async (u, verdict) => {
+    const userId = u.id;
     setProcessing(userId);
     try {
-      await updateDoc(doc(db, 'users', userId), {
-        verificationStatus: verdict,
-        verificationReviewedAt: serverTimestamp(),
-      });
+      const update = { verificationStatus: verdict, verificationReviewedAt: serverTimestamp() };
+      // On approval, force the display name to the legal name they declared (matches the INE)
+      const approvedName = (u.legalName || '').trim();
+      if (verdict === 'verified' && approvedName) update.name = approvedName;
+      await updateDoc(doc(db, 'users', userId), update);
       await createNotification(userId, verdict === 'verified' ? 'account_verified' : 'account_rejected', 'Taskly', {
         jobTitle: verdict === 'verified' ? 'Tu cuenta ha sido verificada' : 'Tu solicitud de verificación fue rechazada',
         jobId: '',
       });
       const approved = verdict === 'verified';
-      setPendingUsers(prev => prev.filter(u => u.id !== userId));
+      setPendingUsers(prev => prev.filter(x => x.id !== userId));
       if (approved) {
-        setVerifiedUsers(prev => [...prev, { id: userId, name: userName, verificationStatus: 'verified' }]);
+        setVerifiedUsers(prev => [...prev, { id: userId, name: update.name || u.name, verificationStatus: 'verified' }]);
       }
     } catch (e) {
       Alert.alert('Error', 'No se pudo actualizar la verificación.');
@@ -7055,6 +7076,15 @@ function AdminPanelModal({ visible, onClose }) {
           </View>
         )}
       </View>
+      {u.verificationStatus === 'pending' && (
+        <View style={{ backgroundColor: COLORS.accent + '15', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+          <Text style={{ color: C.muted, fontSize: 11, fontWeight: '700', letterSpacing: 0.5 }}>NOMBRE DECLARADO — debe coincidir con la INE</Text>
+          <Text style={{ color: C.text, fontSize: 17, fontWeight: '800', marginTop: 2 }}>{u.legalName || '⚠️ No declaró nombre'}</Text>
+          {u.name && u.legalName && u.name !== u.legalName && (
+            <Text style={{ color: C.muted, fontSize: 11, marginTop: 3 }}>Al aprobar, el nombre en la app cambiará de "{u.name}" a "{u.legalName}".</Text>
+          )}
+        </View>
+      )}
       {u.ineImages && (
         <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
           {u.ineImages.front ? (
@@ -7084,7 +7114,7 @@ function AdminPanelModal({ visible, onClose }) {
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <TouchableOpacity
             style={{ flex: 1, backgroundColor: COLORS.green, borderRadius: 8, padding: 10, alignItems: 'center' }}
-            onPress={() => handleVerdict(u.id, u.name, 'verified')}
+            onPress={() => handleVerdict(u, 'verified')}
             disabled={processing === u.id}
           >
             {processing === u.id
@@ -7095,7 +7125,7 @@ function AdminPanelModal({ visible, onClose }) {
             style={{ flex: 1, backgroundColor: COLORS.red + 'dd', borderRadius: 8, padding: 10, alignItems: 'center' }}
             onPress={() => Alert.alert('Rechazar verificación', `¿Rechazar la solicitud de ${u.name}?`, [
               { text: 'Cancelar', style: 'cancel' },
-              { text: 'Rechazar', style: 'destructive', onPress: () => handleVerdict(u.id, u.name, 'unverified') },
+              { text: 'Rechazar', style: 'destructive', onPress: () => handleVerdict(u, 'unverified') },
             ])}
             disabled={processing === u.id}
           >
@@ -7325,9 +7355,18 @@ function ProfileScreen({ user, onClose, themeMode, onThemeChange, onShowOnboardi
       };
       if (imageUrl !== null) update.profileImage = imageUrl;
 
+      // A verified/pending name no longer matches the INE once changed — drop verification
+      // so the worker must re-verify with the new name (also enforced in Firestore rules).
+      const nameChanged = name.trim() !== (userProfile?.name || '');
+      const wasVerifying = userProfile?.verificationStatus === 'verified' || userProfile?.verificationStatus === 'pending';
+      const resetVerification = nameChanged && wasVerifying;
+      if (resetVerification) update.verificationStatus = 'unverified';
+
       await updateDoc(doc(db, 'users', user.id), update);
 
-      Alert.alert('✓ Guardado', 'Tu perfil fue actualizado');
+      Alert.alert('✓ Guardado', resetVerification
+        ? 'Tu perfil fue actualizado. Como cambiaste tu nombre, deberás verificar tu identidad de nuevo para recuperar el sello verificado.'
+        : 'Tu perfil fue actualizado');
       setEditing(false);
       loadProfile();
     } catch (error) {

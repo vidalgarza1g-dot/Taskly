@@ -524,12 +524,15 @@
         .sort((a, b) => (a.verificationStatus === 'pending' ? -1 : 1) - (b.verificationStatus === 'pending' ? -1 : 1));
       document.getElementById('stat-pending-ine').textContent = workers.filter(w => w.verificationStatus === 'pending').length;
       if (!workers.length) { el.innerHTML = '<div class="empty">Sin verificaciones de INE</div>'; return; }
+      window._ineWorkers = workers;
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       el.innerHTML = `<table>
-        <thead><tr><th>Trabajador</th><th>Email</th><th>Estado</th><th>INE (frente / reverso)</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>Trabajador</th><th>Nombre declarado (INE)</th><th>Email</th><th>Estado</th><th>INE (frente / reverso / selfie)</th><th>Acciones</th></tr></thead>
         <tbody>${workers.map(w => `
           <tr>
-            <td style="font-weight:600">${w.name||'—'}</td>
-            <td style="color:#aaa">${w.email||'—'}</td>
+            <td style="font-weight:600">${esc(w.name)||'—'}</td>
+            <td>${w.legalName ? `<strong style="color:#FF6B35">${esc(w.legalName)}</strong>${w.name && w.name!==w.legalName ? `<br><span style="color:#888;font-size:11px">se mostrará este nombre al aprobar</span>`:''}` : '<span style="color:#e67e22;font-size:12px">Sin nombre declarado</span>'}</td>
+            <td style="color:#aaa">${esc(w.email)||'—'}</td>
             <td><span class="badge ${w.verificationStatus==='verified'?'verified':w.verificationStatus==='pending'?'pending':'rejected'}">${(w.verificationStatus||'—').toUpperCase()}</span></td>
             <td><div style="display:flex;gap:8px">
               ${w.ineImages?.front ? `<img class="ine" src="${w.ineImages.front}" onclick="window.open('${w.ineImages.front}','_blank')" />` : '<span style="color:#666;font-size:12px">Sin frente</span>'}
@@ -547,8 +550,13 @@
   };
 
   window.setINE = async (uid, status) => {
-    if (!confirm(`¿${status==='verified'?'Aprobar':'Rechazar'} la verificación?`)) return;
-    await updateDoc(doc(db, 'users', uid), { verificationStatus: status, verificationReviewedAt: serverTimestamp() });
+    const w = (window._ineWorkers || []).find(x => x.id === uid);
+    const legalName = (w && w.legalName || '').trim();
+    if (status === 'verified' && !legalName && !confirm('Este trabajador no declaró un nombre para su INE. ¿Aprobar de todas formas sin ajustar el nombre?')) return;
+    if (!confirm(`¿${status==='verified'?'Aprobar':'Rechazar'} la verificación${status==='verified'&&legalName?` y mostrar el nombre "${legalName}"`:''}?`)) return;
+    const update = { verificationStatus: status, verificationReviewedAt: serverTimestamp() };
+    if (status === 'verified' && legalName) update.name = legalName;
+    await updateDoc(doc(db, 'users', uid), update);
     await notifyUser(uid,
       status === 'verified' ? 'account_verified' : 'account_rejected',
       status === 'verified'
