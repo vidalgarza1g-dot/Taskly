@@ -23,8 +23,6 @@ service cloud.firestore {
       allow read: if isAuth();
       // Cannot self-assign admin at signup
       allow create: if isOwner(userId) && request.resource.data.isAdmin != true;
-      // Owner can edit their own profile, but can never grant themselves admin
-      // and can only move verificationStatus to 'pending' (admin sets 'verified')
       // Owner can edit their own profile but never grant themselves admin, never
       // self-verify (only admin sets 'verified' — owner may set 'pending'/'unverified'),
       // and — crucially — a verified user cannot change their display name while staying

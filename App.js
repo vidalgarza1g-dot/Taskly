@@ -7332,6 +7332,26 @@ function ProfileScreen({ user, onClose, themeMode, onThemeChange, onShowOnboardi
       return;
     }
 
+    // Warn BEFORE saving if changing the name will cost them their verification
+    const nameChanged = name.trim() !== (userProfile?.name || '');
+    const wasVerifying = userProfile?.verificationStatus === 'verified' || userProfile?.verificationStatus === 'pending';
+    if (nameChanged && wasVerifying) {
+      Alert.alert(
+        'Cambiar tu nombre',
+        userProfile?.verificationStatus === 'verified'
+          ? 'Tu cuenta está verificada. Si cambias tu nombre dejará de coincidir con tu INE y perderás el sello de cuenta verificada. Tendrás que verificar tu identidad de nuevo.'
+          : 'Tienes una verificación en revisión. Si cambias tu nombre, la solicitud se cancelará y tendrás que enviarla otra vez.',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Cambiar de todas formas', style: 'destructive', onPress: doSave },
+        ]
+      );
+      return;
+    }
+    doSave();
+  };
+
+  const doSave = async () => {
     setLoading(true);
     try {
       // Try uploading new image separately; if it fails, keep existing image and still save profile text
