@@ -2698,9 +2698,15 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
     ? new Date(payout.arrival_date * 1000).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
   const pendingMXN = payoutStatus?.pending ?? null;
-  const availableOnDate = payoutStatus?.nextAvailableOn
-    ? new Date(payoutStatus.nextAvailableOn * 1000).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
-    : null;
+  // Range from when funds become available (~7 days) to a couple business days later at the bank
+  const availRange = (() => {
+    if (!payoutStatus?.nextAvailableOn) return null;
+    const start = new Date(payoutStatus.nextAvailableOn * 1000);
+    const end = new Date((payoutStatus.nextAvailableOn + 3 * 86400) * 1000);
+    const mS = start.toLocaleDateString('es-MX', { month: 'short' });
+    const mE = end.toLocaleDateString('es-MX', { month: 'short' });
+    return mS === mE ? `${start.getDate()}–${end.getDate()} ${mS}` : `${start.getDate()} ${mS} – ${end.getDate()} ${mE}`;
+  })();
 
   const steps = [
     {
@@ -2719,7 +2725,7 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
       icon: 'arrow-forward-circle',
       label: 'En camino al banco',
       sub: arrivalDate ? `Llega el ${arrivalDate}`
-        : availableOnDate ? `Disponible el ${availableOnDate}, luego 1-2 días hábiles al banco`
+        : availRange ? `Llega aprox. ${availRange}`
         : loadingPerJob ? 'Verificando con Stripe…'
         : transferred ? 'Procesando — Stripe deposita en días hábiles'
         : 'Esperando ciclo de pago de Stripe',
@@ -2788,9 +2794,9 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
             ${pendingMXN.toFixed(2)} MXN en balance de Stripe
           </Text>
           <Text style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>
-            {availableOnDate
-              ? `Se libera el ${availableOnDate} y luego se deposita a tu banco (1-2 días hábiles). Stripe libera los fondos ~7 días hábiles después de cada pago en México.`
-              : 'Stripe libera los fondos ~7 días hábiles después de cada pago (plazo estándar en México); luego se depositan a tu banco automáticamente (1-2 días hábiles).'}
+            {availRange
+              ? `Llega a tu banco aprox. ${availRange}.`
+              : 'Stripe libera los fondos ~7 días hábiles después de cada pago (plazo estándar en México) y luego los deposita a tu banco.'}
           </Text>
         </View>
       )}
@@ -6899,20 +6905,36 @@ function IneVerificationSection({ userId, userProfile, onRefresh }) {
 function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
   const C = useTheme();
   const [loading, setLoading] = useState(false);
+  const [bankInfo, setBankInfo] = useState(null);
   const isSetup = !!userProfile?.stripeAccountId;
+
+  useEffect(() => {
+    if (!userProfile?.stripeAccountId) return;
+    let alive = true;
+    authedFetch(`${BACKEND_URL}/connect-account-info/${userProfile.stripeAccountId}`)
+      .then(r => r.json())
+      .then(d => { if (alive && !d.error) setBankInfo(d); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [userProfile?.stripeAccountId]);
 
   const handleOpenOnboarding = async () => {
     setLoading(true);
     try {
-      const res1 = await authedFetch(`${BACKEND_URL}/create-connect-account`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, name: userName }),
-      });
-      const { accountId, error: err1 } = await res1.json();
-      if (err1) throw new Error(err1);
-
-      await updateDoc(doc(db, 'users', userId), { stripeAccountId: accountId });
+      // Reuse the existing Connect account when updating — creating a new one would
+      // orphan the old account (and its balance) and reset the worker's setup.
+      let accountId = userProfile?.stripeAccountId || null;
+      if (!accountId) {
+        const res1 = await authedFetch(`${BACKEND_URL}/create-connect-account`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, name: userName }),
+        });
+        const { accountId: newId, error: err1 } = await res1.json();
+        if (err1) throw new Error(err1);
+        accountId = newId;
+        await updateDoc(doc(db, 'users', userId), { stripeAccountId: accountId });
+      }
 
       const res2 = await authedFetch(`${BACKEND_URL}/create-account-link`, {
         method: 'POST',
@@ -6944,9 +6966,21 @@ function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
             <Ionicons name="checkmark-circle" size={22} color={COLORS.green} />
             <View style={{ flex: 1 }}>
               <Text style={{ color: C.text, fontWeight: '600', fontSize: 14 }}>Cuenta bancaria conectada</Text>
-              <Text style={{ color: C.muted, fontSize: 13 }}>Recibirás pagos automáticamente al completar trabajos.</Text>
+              {bankInfo?.bank?.last4 ? (
+                <Text style={{ color: C.muted, fontSize: 13 }}>
+                  {bankInfo.bank.bankName ? `${bankInfo.bank.bankName} ` : 'Cuenta '}terminada en ••{bankInfo.bank.last4}
+                </Text>
+              ) : (
+                <Text style={{ color: C.muted, fontSize: 13 }}>Recibirás pagos automáticamente al completar trabajos.</Text>
+              )}
             </View>
           </View>
+          {bankInfo && (bankInfo.needsAttention || !bankInfo.payoutsEnabled) && (
+            <View style={{ backgroundColor: COLORS.yellow + '18', borderRadius: 8, borderWidth: 1, borderColor: COLORS.yellow + '44', padding: 10, marginBottom: 12 }}>
+              <Text style={{ color: COLORS.yellow, fontSize: 12, fontWeight: '700' }}>Falta completar tu información</Text>
+              <Text style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Stripe necesita más datos antes de poder depositarte. Toca "Actualizar información bancaria".</Text>
+            </View>
+          )}
           <TouchableOpacity
             style={{ padding: 10, borderRadius: 8, borderWidth: 1, borderColor: C.border, alignItems: 'center' }}
             onPress={handleOpenOnboarding}
