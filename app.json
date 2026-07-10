@@ -43,6 +43,13 @@
         "UIBackgroundModes": [
           "remote-notification"
         ],
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.1084969190604-pv6hkaf49iiodf1jn8ojgsgn8ttea8jr"
+            ]
+          }
+        ],
         "NSLocationWhenInUseUsageDescription": "Taskly necesita tu ubicación para mostrar tu dirección exacta al trabajador asignado.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Taskly necesita tu ubicación para coordinar los servicios a domicilio.",
         "NSPhotoLibraryUsageDescription": "Taskly necesita acceso a tu galería para subir fotos del trabajo.",

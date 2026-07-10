@@ -378,9 +378,9 @@ const LIGHT_COLORS = LIGHT_COLORS_SOURCE;
 const STRIPE_PUBLISHABLE_KEY = "pk_live_51TaPhRRqJ0LJg2PAzNcjAM34Z3jm7OBYFdY3xAyfTkNjACN7BchVWJ4Q7NnTvDiMUlq9tlHOuZctRbdWyIdAssxL0052tbR0NE";
 
 // 🔑 GOOGLE OAUTH — get from Firebase Console → Authentication → Google → Web client ID
-const GOOGLE_WEB_CLIENT_ID = "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_WEB_CLIENT_ID = "1084969190604-4u7e37vopmkdmur02lpf0upheids4kg0.apps.googleusercontent.com";
 // iOS: Google Cloud Console → Credentials → iOS OAuth 2.0 client ID
-const GOOGLE_IOS_CLIENT_ID = "756871178148-ij14s8c9h36rj0r5ej12ao0i0n6r5hvr.apps.googleusercontent.com";
+const GOOGLE_IOS_CLIENT_ID = "1084969190604-pv6hkaf49iiodf1jn8ojgsgn8ttea8jr.apps.googleusercontent.com";
 // Android: Google Cloud Console → Credentials → Android OAuth 2.0 client ID
 const GOOGLE_ANDROID_CLIENT_ID = "YOUR_GOOGLE_ANDROID_CLIENT_ID.apps.googleusercontent.com";
 // Auto-flag: set to true only when real client IDs are in place
