@@ -288,6 +288,7 @@ const NOTIF_META = {
   worker_on_way:     { icon: 'car-outline',                color: COLORS.blue,   title: 'En camino' },
   worker_arrived:    { icon: 'location-outline',           color: COLORS.accent, title: 'Trabajador llegó' },
   recurring_created: { icon: 'repeat-outline',             color: COLORS.blue,   title: 'Servicio programado' },
+  payout_failed:     { icon: 'alert-circle-outline',       color: COLORS.red,    title: 'Depósito no completado' },
 };
 const getNotifMeta = (type) => NOTIF_META[type] || { icon: 'notifications-outline', color: COLORS.muted, title: 'Notificación' };
 
