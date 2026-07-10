@@ -2698,6 +2698,9 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
     ? new Date(payout.arrival_date * 1000).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
     : null;
   const pendingMXN = payoutStatus?.pending ?? null;
+  const availableOnDate = payoutStatus?.nextAvailableOn
+    ? new Date(payoutStatus.nextAvailableOn * 1000).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
 
   const steps = [
     {
@@ -2716,6 +2719,7 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
       icon: 'arrow-forward-circle',
       label: 'En camino al banco',
       sub: arrivalDate ? `Llega el ${arrivalDate}`
+        : availableOnDate ? `Disponible el ${availableOnDate}, luego 1-2 días hábiles al banco`
         : loadingPerJob ? 'Verificando con Stripe…'
         : transferred ? 'Procesando — Stripe deposita en días hábiles'
         : 'Esperando ciclo de pago de Stripe',
@@ -2784,7 +2788,9 @@ function PaymentTracker({ job, payoutStatus, isWorker, workerAccountId, clientNa
             ${pendingMXN.toFixed(2)} MXN en balance de Stripe
           </Text>
           <Text style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>
-            Stripe retiene los primeros pagos ~7 días hábiles antes de depositar. Esto es normal para cuentas nuevas.
+            {availableOnDate
+              ? `Se libera el ${availableOnDate} y luego se deposita a tu banco (1-2 días hábiles). Stripe libera los fondos ~7 días hábiles después de cada pago en México.`
+              : 'Stripe libera los fondos ~7 días hábiles después de cada pago (plazo estándar en México); luego se depositan a tu banco automáticamente (1-2 días hábiles).'}
           </Text>
         </View>
       )}
@@ -5754,7 +5760,7 @@ const HELP_ARTICLES = [
     { q: '¿Cuánto cuesta usar Taskly?', a: 'Publicar es gratis. Pagando con tarjeta se agrega una comisión de servicio del 2.5% más el procesamiento del pago (3.6% + $3 MXN), desglosados antes de confirmar. En efectivo no hay comisión.' },
     { q: '¿Cómo se protege mi pago?', a: 'Tu pago queda protegido en la plataforma y se libera al trabajador cuando ambas partes confirman que el trabajo fue completado. Esto es la Garantía Taskly.' },
     { q: '¿Puedo dejar propina?', a: 'Sí. Al momento de pagar puedes agregar una propina de $20, $50 o $100 MXN. El 100% de la propina va al trabajador.' },
-    { q: '¿Cuándo recibe su dinero el trabajador?', a: 'Tras confirmarse el trabajo, Stripe procesa el pago y deposita en la cuenta bancaria del trabajador en 1-2 días hábiles. Los primeros pagos de una cuenta nueva pueden tardar ~7 días.' },
+    { q: '¿Cuándo recibe su dinero el trabajador?', a: 'Al confirmarse el trabajo, Stripe libera los fondos ~7 días hábiles después del pago (plazo estándar de Stripe en México) y luego los deposita a la cuenta bancaria del trabajador en 1-2 días hábiles. La app muestra la fecha exacta de disponibilidad en el estado del pago.' },
   ]},
   { cat: '🛡️ Garantía y disputas', items: [
     { q: '¿Qué es la Garantía Taskly?', a: 'Si pagas con tarjeta, tu dinero queda protegido en la plataforma hasta que confirmes que el trabajo se completó. Si algo sale mal, abre una disputa y te ayudamos a resolverlo.' },
