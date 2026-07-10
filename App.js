@@ -6976,7 +6976,16 @@ function WorkerBankSection({ userId, userName, userProfile, onRefresh }) {
               )}
             </View>
           </View>
-          {bankInfo && (bankInfo.needsAttention || !bankInfo.payoutsEnabled) && (
+          {bankInfo?.lastPayoutFailed && (
+            <View style={{ backgroundColor: COLORS.red + '18', borderRadius: 8, borderWidth: 1, borderColor: COLORS.red + '55', padding: 10, marginBottom: 12 }}>
+              <Text style={{ color: COLORS.red, fontSize: 12, fontWeight: '700' }}>⚠️ Tu último depósito falló</Text>
+              <Text style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>
+                Tu dinero sigue seguro en tu saldo de Taskly. Actualiza tu información bancaria y Stripe reintentará el depósito automáticamente.
+                {bankInfo.lastPayoutFailureMessage ? `\n\nMotivo: ${bankInfo.lastPayoutFailureMessage}` : ''}
+              </Text>
+            </View>
+          )}
+          {bankInfo && !bankInfo.lastPayoutFailed && (bankInfo.needsAttention || !bankInfo.payoutsEnabled) && (
             <View style={{ backgroundColor: COLORS.yellow + '18', borderRadius: 8, borderWidth: 1, borderColor: COLORS.yellow + '44', padding: 10, marginBottom: 12 }}>
               <Text style={{ color: COLORS.yellow, fontSize: 12, fontWeight: '700' }}>Falta completar tu información</Text>
               <Text style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>Stripe necesita más datos antes de poder depositarte. Toca "Actualizar información bancaria".</Text>
