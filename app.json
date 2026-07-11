@@ -120,8 +120,7 @@
           "enableGooglePay": true
         }
       ],
-      "expo-video",
-      "@sentry/react-native"
+      "expo-video"
     ]
   }
 }
