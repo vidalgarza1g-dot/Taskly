@@ -2843,6 +2843,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
   const [cardLoading, setCardLoading]         = useState(false);
   const [tip, setTip] = useState(0);
   const anyLoading = platformLoading || cardLoading;
+  const C = useTheme();
 
   // Tip is grossed-up with the job amount so the worker receives 100% of it
   const stripe = calcStripeFees(jobAmount, tip);
@@ -2917,33 +2918,33 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
 
   const Row = ({ label, value, accent }) => (
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-      <Text style={{ color: accent ? COLORS.muted : COLORS.muted, fontSize: 13 }}>{label}</Text>
-      <Text style={{ color: accent ? COLORS.accent : COLORS.text, fontSize: 13, fontWeight: accent ? '700' : '400' }}>{value}</Text>
+      <Text style={{ color: C.muted, fontSize: 13 }}>{label}</Text>
+      <Text style={{ color: accent ? COLORS.accent : C.text, fontSize: 13, fontWeight: accent ? '700' : '400' }}>{value}</Text>
     </View>
   );
 
   return (
     <Modal visible animationType="slide" transparent>
       <View style={styles.paymentModalOverlay}>
-        <View style={styles.paymentModalContent}>
+        <View style={[styles.paymentModalContent, { backgroundColor: C.card, borderColor: C.border }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <Ionicons name="lock-closed" size={16} color={COLORS.green} />
-            <Text style={styles.paymentTitle}>Pago seguro</Text>
+            <Text style={[styles.paymentTitle, { color: C.text }]}>Pago seguro</Text>
           </View>
-          <Text style={styles.paymentDescription}>{description}</Text>
+          <Text style={[styles.paymentDescription, { color: C.muted }]}>{description}</Text>
 
           {/* Tip selector — 100% goes to the worker */}
           <View style={{ marginTop: 10 }}>
-            <Text style={{ color: COLORS.muted, fontSize: 12, fontWeight: '700', marginBottom: 8 }}>PROPINA (100% para el trabajador)</Text>
+            <Text style={{ color: C.muted, fontSize: 12, fontWeight: '700', marginBottom: 8 }}>PROPINA (100% para el trabajador)</Text>
             <View style={{ flexDirection: 'row', gap: 8 }}>
               {[0, 20, 50, 100].map(t => (
                 <TouchableOpacity
                   key={t}
                   onPress={() => setTip(t)}
                   disabled={anyLoading}
-                  style={{ flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: tip === t ? COLORS.green : COLORS.border, backgroundColor: tip === t ? COLORS.green + '22' : COLORS.card }}
+                  style={{ flex: 1, paddingVertical: 8, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: tip === t ? COLORS.green : C.border, backgroundColor: tip === t ? COLORS.green + '22' : C.bg }}
                 >
-                  <Text style={{ color: tip === t ? COLORS.green : COLORS.muted, fontWeight: '700', fontSize: 13 }}>
+                  <Text style={{ color: tip === t ? COLORS.green : C.muted, fontWeight: '700', fontSize: 13 }}>
                     {t === 0 ? 'Sin propina' : `$${t}`}
                   </Text>
                 </TouchableOpacity>
@@ -2952,16 +2953,16 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
           </View>
 
           {/* Fee breakdown card */}
-          <View style={{ backgroundColor: COLORS.card, borderRadius: 12, padding: 14, marginTop: 10, marginBottom: 16, borderWidth: 1, borderColor: COLORS.border }}>
+          <View style={{ backgroundColor: C.bg, borderRadius: 12, padding: 14, marginTop: 10, marginBottom: 16, borderWidth: 1, borderColor: C.border }}>
             <Row label="Precio acordado" value={`$${jobAmount} MXN`} />
             {tip > 0 && <Row label="Propina (directa al trabajador)" value={`+ $${tip} MXN`} accent />}
             <Row label="Comisión de procesamiento (tarjeta)" value={`+ $${stripe.processingFee} MXN`} />
-            <Text style={{ color: COLORS.muted, fontSize: 11, marginTop: 4, lineHeight: 15 }}>
+            <Text style={{ color: C.muted, fontSize: 11, marginTop: 4, lineHeight: 15 }}>
               Esta comisión la cobra Stripe (procesador de pagos) por los pagos con tarjeta. Taskly no te cobra comisión a ti.
             </Text>
-            <View style={{ height: 1, backgroundColor: COLORS.border, marginVertical: 8 }} />
+            <View style={{ height: 1, backgroundColor: C.border, marginVertical: 8 }} />
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={{ color: COLORS.text, fontSize: 14, fontWeight: '700' }}>Total a pagar</Text>
+              <Text style={{ color: C.text, fontSize: 14, fontWeight: '700' }}>Total a pagar</Text>
               <Text style={{ color: COLORS.accent, fontSize: 16, fontWeight: '900' }}>${stripe.clientTotal} MXN</Text>
             </View>
           </View>
@@ -2999,7 +3000,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
             )}
           </TouchableOpacity>
 
-          <View style={styles.paymentInfo}>
+          <View style={[styles.paymentInfo, { backgroundColor: C.bg }]}>
             <Ionicons name="shield-checkmark-outline" size={14} color={COLORS.green} />
             <Text style={[styles.paymentInfoText, { marginLeft: 6 }]}>
               Cifrado · Datos nunca almacenados en Taskly
@@ -3007,11 +3008,11 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
           </View>
 
           <TouchableOpacity
-            style={[styles.primaryButton, { backgroundColor: COLORS.border, marginTop: 10 }]}
+            style={[styles.primaryButton, { backgroundColor: C.border, marginTop: 10 }]}
             onPress={onClose}
             disabled={anyLoading}
           >
-            <Text style={styles.primaryButtonText}>Cancelar</Text>
+            <Text style={[styles.primaryButtonText, { color: C.text }]}>Cancelar</Text>
           </TouchableOpacity>
         </View>
       </View>
