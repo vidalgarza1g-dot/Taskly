@@ -9231,7 +9231,12 @@ export default function App() {
         // Test accounts skip email verification ONLY in development builds. In production
         // (__DEV__ === false) every password account must verify — the bypass is disabled.
         const TEST_EMAILS = ['cliente@cliente.com', 'trabajador@trabajador.com', 'trabajador2@trabajador.com', 'trabajador3@trabajador.com'];
-        const isTestBypass = __DEV__ && TEST_EMAILS.includes(firebaseUser.email);
+        // Apple App Review demo logins — a fixed allowlist that skips email verification
+        // even in production, so reviewers can sign in without a real inbox. They still
+        // need the correct password, so no one else can use these.
+        const REVIEW_EMAILS = ['apple.cliente@taskly.mx', 'apple.trabajador@taskly.mx'];
+        const fbEmail = (firebaseUser.email || '').toLowerCase();
+        const isTestBypass = (__DEV__ && TEST_EMAILS.includes(firebaseUser.email)) || REVIEW_EMAILS.includes(fbEmail);
         const isPasswordProvider = firebaseUser.providerData?.some(p => p.providerId === 'password');
         if (isPasswordProvider && !firebaseUser.emailVerified && !isTestBypass) {
           setNeedsEmailVerification(true);
