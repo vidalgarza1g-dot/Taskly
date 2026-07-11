@@ -9234,7 +9234,7 @@ export default function App() {
         // Apple App Review demo logins — a fixed allowlist that skips email verification
         // even in production, so reviewers can sign in without a real inbox. They still
         // need the correct password, so no one else can use these.
-        const REVIEW_EMAILS = ['apple.cliente@taskly.mx', 'apple.trabajador@taskly.mx'];
+        const REVIEW_EMAILS = ['apple@client.view.com', 'apple@worker.view.com'];
         const fbEmail = (firebaseUser.email || '').toLowerCase();
         const isTestBypass = (__DEV__ && TEST_EMAILS.includes(firebaseUser.email)) || REVIEW_EMAILS.includes(fbEmail);
         const isPasswordProvider = firebaseUser.providerData?.some(p => p.providerId === 'password');
