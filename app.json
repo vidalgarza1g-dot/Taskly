@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.taskly.app",
+      "bundleIdentifier": "com.taskly.mx",
       "usesAppleSignIn": true,
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
@@ -116,7 +116,7 @@
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.com.taskly.app",
+          "merchantIdentifier": "merchant.com.taskly.mx",
           "enableGooglePay": true
         }
       ],
