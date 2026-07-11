@@ -48,6 +48,11 @@
             "CFBundleURLSchemes": [
               "com.googleusercontent.apps.1084969190604-pv6hkaf49iiodf1jn8ojgsgn8ttea8jr"
             ]
+          },
+          {
+            "CFBundleURLSchemes": [
+              "taskly"
+            ]
           }
         ],
         "NSLocationWhenInUseUsageDescription": "Taskly necesita tu ubicación para mostrar tu dirección exacta al trabajador asignado.",
