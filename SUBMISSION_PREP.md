@@ -16,6 +16,10 @@ DEMO ACCOUNTS
 - Worker:  [email]  /  [password]   (has a Stripe Connect test account so you
   can see the full quote → accept → payment flow)
 
+  ⚠️ IMPORTANT: the demo accounts MUST have verified emails (or use Google/Apple
+  sign-in). In production builds the dev-only email-verification bypass is OFF, so
+  an unverified email/password demo account cannot log in and App Review will fail.
+
 PAYMENTS / NO IN-APP PURCHASE
 All payments are for physical, in-person services performed at the client's
 home, processed via Stripe. There are no digital goods, subscriptions, or
