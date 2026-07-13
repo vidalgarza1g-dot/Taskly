@@ -3505,7 +3505,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
       if (isEditing) {
         const jobRef = doc(db, 'jobs', editingJob.id);
         await updateDoc(jobRef, jobData);
-        Alert.alert('✓ Actualizado!', 'Tu trabajo fue actualizado');
+        Alert.alert('✓ Actualizado!', 'Tu problema fue actualizado');
       } else {
         const newJobRef = await addDoc(collection(db, 'jobs'), {
           ...jobData,
@@ -3528,13 +3528,13 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
 
         const urgentText = urgentJob ? ' como URGENTE' : '';
         const cashNote = paymentMethod === 'cash' ? '\n\nEste trabajo tiene pago en efectivo.' : '';
-        Alert.alert('✓ Publicado!', `Tu trabajo fue publicado${urgentText}${cashNote}`);
+        Alert.alert('✓ Publicado!', `Tu problema fue publicado${urgentText}${cashNote}`);
       }
       
       onClose();
     } catch (error) {
       console.error('Error posting/editing job:', error);
-      Alert.alert('Error', 'No se pudo guardar el trabajo');
+      Alert.alert('Error', 'No se pudo guardar el problema');
     } finally {
       setLoading(false);
     }
@@ -3549,7 +3549,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeButton}>← Cancelar</Text>
           </TouchableOpacity>
-          <Text style={[styles.modalTitle, { color: C.text }]}>{isEditing ? 'Editar trabajo' : 'Publicar trabajo'}</Text>
+          <Text style={[styles.modalTitle, { color: C.text }]}>{isEditing ? 'Editar problema' : 'Publicar problema'}</Text>
           <View style={{ width: 80 }} />
         </View>
 
@@ -3817,7 +3817,7 @@ function PostJobScreen({ user, onClose, editingJob = null, targetWorker = null }
                 <ActivityIndicator color="#fff" />
               ) : (
                 <Text style={styles.primaryButtonText}>
-                  {isEditing ? 'Guardar cambios' : 'Publicar trabajo'} →
+                  {isEditing ? 'Guardar cambios' : 'Publicar problema'} →
                 </Text>
               )}
             </TouchableOpacity>
@@ -8128,7 +8128,7 @@ function BankingOnboardingModal({ userId, userName, onDone }) {
 function OnboardingScreen({ role, onDone }) {
   const [page, setPage] = useState(0);
   const slides = role === 'client' ? [
-    { icon: '📋', title: 'Publica tu trabajo', desc: 'Describe el problema, agrega fotos y fija tu presupuesto. Recibirás propuestas de trabajadores calificados en minutos.' },
+    { icon: '📋', title: 'Publica tu problema', desc: 'Describe el problema y agrega fotos. Recibes cotizaciones de trabajadores calificados en minutos.' },
     { icon: '👷', title: 'Compara y elige', desc: 'Revisa perfiles verificados, calificaciones reales y propuestas. Chatea con los trabajadores antes de contratar.' },
     { icon: '✅', title: 'Trabajo garantizado', desc: 'Coordina el horario, confirma la cita y califica al trabajador al terminar.' },
   ] : [
@@ -9832,7 +9832,7 @@ export default function App() {
               ? <View style={styles.emptyState}>
                   <Ionicons name="briefcase-outline" size={48} color={activeColors.muted} style={{ marginBottom: 8 }} />
                   <Text style={[styles.emptyStateText, { color: activeColors.muted }]}>
-                    {myJobFilter === 'all' ? 'No has publicado trabajos' : 'No hay trabajos en esta categoría'}
+                    {myJobFilter === 'all' ? 'Aún no has publicado ningún problema' : 'No hay problemas en esta categoría'}
                   </Text>
                   {myJobFilter === 'all' && (
                     <TouchableOpacity style={styles.emptyButton} onPress={() => setShowPostJob(true)}>
@@ -10102,7 +10102,7 @@ export default function App() {
             onPress={() => setActiveTab('my-jobs')}
           >
             <Ionicons name={activeTab === 'my-jobs' ? 'briefcase' : 'briefcase-outline'} size={24} color={activeTab === 'my-jobs' ? COLORS.accent : activeColors.muted} />
-            <Text style={[styles.navText, { color: activeColors.muted }, activeTab === 'my-jobs' && styles.navTextActive]}>Mis trabajos</Text>
+            <Text style={[styles.navText, { color: activeColors.muted }, activeTab === 'my-jobs' && styles.navTextActive]}>Mis solicitudes</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
