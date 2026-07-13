@@ -69,6 +69,7 @@ import * as Haptics from 'expo-haptics';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Google from 'expo-auth-session/providers/google';
 import Svg, { Path } from 'react-native-svg';
+import { SafeAreaProvider, SafeAreaView as SafeAreaViewSA, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -10020,10 +10021,11 @@ export default function App() {
   };
 
   return (
-    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY} merchantIdentifier="merchant.com.taskly.app">
+    <StripeProvider publishableKey={STRIPE_PUBLISHABLE_KEY} merchantIdentifier="merchant.com.taskly.mx">
+    <SafeAreaProvider>
     <ErrorBoundary>
     <ThemeContext.Provider value={activeColors}>
-    <SafeAreaView style={[styles.container, { backgroundColor: activeColors.bg }]}>
+    <SafeAreaViewSA edges={['top', 'left', 'right']} style={[styles.container, { backgroundColor: activeColors.bg }]}>
       <StatusBar barStyle={resolvedScheme === 'light' ? 'dark-content' : 'light-content'} backgroundColor={activeColors.bg} />
 
       <View style={[styles.header, { borderBottomColor: activeColors.border, backgroundColor: activeColors.bg }]}>
@@ -10087,7 +10089,9 @@ export default function App() {
         </TouchableOpacity>
       )}
 
-      <View style={[styles.bottomNav, { backgroundColor: activeColors.bg, borderTopColor: activeColors.border }]}>
+      <SafeAreaInsetsContext.Consumer>
+        {(insets) => (
+      <View style={[styles.bottomNav, { backgroundColor: activeColors.bg, borderTopColor: activeColors.border, paddingBottom: (insets?.bottom || 0) + 8 }]}>
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => setActiveTab('browse')}
@@ -10137,6 +10141,8 @@ export default function App() {
           <Text style={[styles.navText, { color: activeColors.muted }]}>Perfil</Text>
         </TouchableOpacity>
       </View>
+        )}
+      </SafeAreaInsetsContext.Consumer>
 
       {selectedJob && (
         <JobDetailModal
@@ -10255,9 +10261,10 @@ export default function App() {
           </SafeAreaView>
         </Modal>
       )}
-    </SafeAreaView>
+    </SafeAreaViewSA>
     </ThemeContext.Provider>
     </ErrorBoundary>
+    </SafeAreaProvider>
     </StripeProvider>
   );
 }
