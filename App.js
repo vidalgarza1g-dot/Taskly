@@ -2881,7 +2881,7 @@ function PaymentModal({ amount: jobAmount, description, onSuccess, onClose, work
       });
       if (error) {
         const userCanceled = error.code === 'Canceled' || error.message?.toLowerCase().includes('cancel');
-        if (!userCanceled) Alert.alert('Error Apple Pay', `${error.message}\n\nCódigo: ${error.code}`);
+        if (!userCanceled) Alert.alert(Platform.OS === 'android' ? 'Error Google Pay' : 'Error Apple Pay', `${error.message}\n\nCódigo: ${error.code}`);
         return;
       }
       onSuccess(data.paymentIntentClientSecret.split('_secret_')[0], tip);
