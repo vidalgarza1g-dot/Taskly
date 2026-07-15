@@ -8615,11 +8615,16 @@ function CreateBusinessScreen({ currentUser, existingBusiness, onClose, onSaved 
 }
 
 // Login screens (with keyboard fix)
-function RoleSelectionScreen({ onRoleSelected }) {
+function RoleSelectionScreen({ onRoleSelected, onBack }) {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
       <ScrollView contentContainerStyle={styles.loginContainer}>
+        {onBack && (
+          <TouchableOpacity onPress={onBack} style={styles.backButton}>
+            <Text style={styles.backButtonText}>← Ya tengo cuenta</Text>
+          </TouchableOpacity>
+        )}
         <View style={styles.logoContainer}>
           <Text style={{ fontSize: 48, fontWeight: '900', color: COLORS.text, letterSpacing: -1, marginBottom: 2 }}>
             Task<Text style={{ color: COLORS.accent }}>ly</Text>
@@ -8815,13 +8820,14 @@ function GoogleSignInButton({ role, disabled }) {
   );
 }
 
-function LoginScreen({ role, onBack }) {
+function LoginScreen({ role, onBack, mode = 'signup', onCreateAccount }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPhoneAuth, setShowPhoneAuth] = useState(false);
   const [tosAccepted, setTosAccepted] = useState(false);
 
+  const isLogin = mode === 'login';
   const roleName = role === 'client' ? 'Cliente' : 'Trabajador';
   const roleIcon = role === 'client' ? '👤' : '👷';
 
@@ -8843,7 +8849,7 @@ function LoginScreen({ role, onBack }) {
       const name = apple.fullName
         ? `${apple.fullName.givenName || ''} ${apple.fullName.familyName || ''}`.trim()
         : null;
-      await ensureUserDoc(result.user, role, name);
+      await ensureUserDoc(result.user, role || 'client', name);
     } catch (e) {
       if (e.code !== 'ERR_REQUEST_CANCELED') Alert.alert('Error', 'No se pudo iniciar sesión con Apple');
     } finally { setLoading(false); }
@@ -8881,14 +8887,20 @@ function LoginScreen({ role, onBack }) {
   const handleLogin = async () => {
     if (!email || !password) { Alert.alert('Campos requeridos', 'Ingresa tu email y contraseña para continuar.'); return; }
     if (password.length < 6) { Alert.alert('Contraseña muy corta', 'La contraseña debe tener al menos 6 caracteres.'); return; }
-    if (!tosAccepted) { Alert.alert('Términos de Servicio', 'Debes aceptar los Términos de Servicio para continuar.'); return; }
+    if (!isLogin && !tosAccepted) { Alert.alert('Términos de Servicio', 'Debes aceptar los Términos de Servicio para continuar.'); return; }
     setLoading(true);
     try {
       const uc = await signInWithEmailAndPassword(auth, email.trim(), password);
-      await ensureUserDoc(uc.user, role);
+      await ensureUserDoc(uc.user, role || 'client');
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
-        // New user — create account
+        if (isLogin) {
+          // Login screen: never auto-create — point them to sign up instead.
+          Alert.alert('No existe la cuenta', 'No encontramos una cuenta con ese correo. Toca "Crear una" abajo para registrarte.');
+          setLoading(false);
+          return;
+        }
+        // Signup: create the account with the chosen role
         try {
           const uc = await createUserWithEmailAndPassword(auth, email.trim(), password);
           await ensureUserDoc(uc.user, role);
@@ -8922,14 +8934,22 @@ function LoginScreen({ role, onBack }) {
       <StatusBar barStyle="light-content" />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView contentContainerStyle={styles.loginContainer}>
-          <TouchableOpacity onPress={onBack} style={styles.backButton}>
-            <Text style={styles.backButtonText}>← Cambiar tipo de cuenta</Text>
-          </TouchableOpacity>
+          {!isLogin && (
+            <TouchableOpacity onPress={onBack} style={styles.backButton}>
+              <Text style={styles.backButtonText}>← Cambiar tipo de cuenta</Text>
+            </TouchableOpacity>
+          )}
 
           <View style={styles.logoContainer}>
             <Image source={require('./assets/splash-icon.png')} style={{ width: 90, height: 90, resizeMode: 'contain', marginBottom: 4 }} />
-            <Text style={styles.roleIconLarge}>{roleIcon}</Text>
-            <Text style={styles.logoText}>{roleName}</Text>
+            {isLogin ? (
+              <Text style={styles.logoText}>Iniciar sesión</Text>
+            ) : (
+              <>
+                <Text style={styles.roleIconLarge}>{roleIcon}</Text>
+                <Text style={styles.logoText}>{roleName}</Text>
+              </>
+            )}
           </View>
 
           <View style={styles.formContainer}>
@@ -8945,7 +8965,7 @@ function LoginScreen({ role, onBack }) {
             )}
 
             {GOOGLE_CONFIGURED
-              ? <GoogleSignInButton role={role} disabled={loading} />
+              ? <GoogleSignInButton role={role || 'client'} disabled={loading} />
               : (
                 <TouchableOpacity style={[styles.googleButton, { opacity: 0.4 }]} disabled>
                   <View style={{ marginRight: 12 }}><GoogleGLogo size={18} /></View>
@@ -8989,7 +9009,8 @@ function LoginScreen({ role, onBack }) {
               secureTextEntry
             />
 
-            {/* ToS acceptance */}
+            {/* ToS acceptance — only when creating an account */}
+            {!isLogin && (
             <TouchableOpacity
               onPress={() => setTosAccepted(v => !v)}
               style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 16, marginTop: 4 }}
@@ -9005,40 +9026,50 @@ function LoginScreen({ role, onBack }) {
               </View>
               <Text style={{ color: COLORS.muted, fontSize: 13, flex: 1, lineHeight: 19 }}>
                 Acepto los{' '}
-                <Text style={{ color: COLORS.accent }} onPress={() => WebBrowser.openBrowserAsync(`${BACKEND_URL}/terms`)}>
+                <Text style={{ color: COLORS.accent }} onPress={() => WebBrowser.openBrowserAsync('https://taskly.com.mx/terminos')}>
                   Términos de Servicio
                 </Text>
                 {' '}y la{' '}
-                <Text style={{ color: COLORS.accent }} onPress={() => WebBrowser.openBrowserAsync(`${BACKEND_URL}/privacy`)}>
+                <Text style={{ color: COLORS.accent }} onPress={() => WebBrowser.openBrowserAsync('https://taskly.com.mx/privacidad')}>
                   Política de Privacidad
                 </Text>
               </Text>
             </TouchableOpacity>
+            )}
 
             <TouchableOpacity
-              style={[styles.primaryButton, (loading || !tosAccepted) && { opacity: 0.5 }]}
+              style={[styles.primaryButton, (loading || (!isLogin && !tosAccepted)) && { opacity: 0.5 }]}
               onPress={handleLogin}
-              disabled={loading || !tosAccepted}
+              disabled={loading || (!isLogin && !tosAccepted)}
             >
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Continuar →</Text>}
+              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{isLogin ? 'Iniciar sesión →' : 'Continuar →'}</Text>}
             </TouchableOpacity>
 
             <TouchableOpacity onPress={handleForgotPassword} style={{ alignItems: 'center', marginTop: 10, marginBottom: 4 }}>
               <Text style={{ color: COLORS.accent, fontSize: 13, fontWeight: '600' }}>Olvidé mi contraseña</Text>
             </TouchableOpacity>
 
-            <View style={styles.infoBox}>
-              <Text style={styles.infoText}>
-                💡 Primera vez: se creará tu cuenta automáticamente{'\n'}
-                Ya tienes cuenta: inicia sesión con tu contraseña
-              </Text>
-            </View>
+            {isLogin ? (
+              <TouchableOpacity onPress={onCreateAccount} style={{ alignItems: 'center', marginTop: 20 }}>
+                <Text style={{ color: COLORS.muted, fontSize: 14 }}>
+                  ¿No tienes cuenta?{' '}
+                  <Text style={{ color: COLORS.accent, fontWeight: '800' }}>Crear una</Text>
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.infoBox}>
+                <Text style={styles.infoText}>
+                  💡 Al continuar se creará tu cuenta como {roleName}.{'\n'}
+                  Te enviaremos un correo de verificación.
+                </Text>
+              </View>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
       {showPhoneAuth && (
-        <PhoneAuthModal role={role} onClose={() => setShowPhoneAuth(false)} />
+        <PhoneAuthModal role={role || 'client'} onClose={() => setShowPhoneAuth(false)} />
       )}
     </SafeAreaView>
   );
@@ -9174,6 +9205,7 @@ export default function App() {
   const [editingJob, setEditingJob] = useState(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [selectedRole, setSelectedRole] = useState(null);
+  const [creatingAccount, setCreatingAccount] = useState(false);
   const [activeTab, setActiveTab] = useState('browse');
   const [exploreSection, setExploreSection] = useState('workers');
   const [bidFilter, setBidFilter] = useState('all');
@@ -9274,6 +9306,8 @@ export default function App() {
       } else {
         setUser(null);
         setNeedsEmailVerification(false);
+        setSelectedRole(null);
+        setCreatingAccount(false);
       }
       if (initializing) setInitializing(false);
     });
@@ -9598,10 +9632,15 @@ export default function App() {
   }
 
   if (!user) {
-    if (!selectedRole) {
-      return <RoleSelectionScreen onRoleSelected={setSelectedRole} />;
+    // Creating an account: pick a role, then the signup form.
+    if (creatingAccount && !selectedRole) {
+      return <RoleSelectionScreen onRoleSelected={setSelectedRole} onBack={() => setCreatingAccount(false)} />;
     }
-    return <LoginScreen role={selectedRole} onBack={() => setSelectedRole(null)} />;
+    if (creatingAccount && selectedRole) {
+      return <LoginScreen mode="signup" role={selectedRole} onBack={() => setSelectedRole(null)} />;
+    }
+    // Default: one unified login for both roles (an existing account keeps its stored role).
+    return <LoginScreen mode="login" onCreateAccount={() => setCreatingAccount(true)} />;
   }
 
   if (showOnboarding) {
