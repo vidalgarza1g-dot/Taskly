@@ -8797,7 +8797,12 @@ function GoogleSignInButton({ role, disabled }) {
       const { id_token } = googleResponse.params;
       const credential = GoogleAuthProvider.credential(id_token);
       signInWithCredential(auth, credential)
-        .then(r => ensureUserDoc(r.user, role))
+        .then(async (r) => {
+          // Sign-in already succeeded here — don't surface an error alert for a
+          // profile-doc hiccup. Pass the Google display name through so it carries over.
+          try { await ensureUserDoc(r.user, role, r.user.displayName); }
+          catch (e) { console.warn('ensureUserDoc (Google):', e?.message); }
+        })
         .catch(() => Alert.alert('Error', 'No se pudo iniciar sesión con Google'));
     }
   }, [googleResponse]);
@@ -9257,7 +9262,7 @@ export default function App() {
           setUser({
             id: firebaseUser.uid,
             email: firebaseUser.email,
-            name: firebaseUser.email?.split('@')[0] || 'Usuario',
+            name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuario',
             role: 'client',
             rating: 0,
             jobCount: 0,
