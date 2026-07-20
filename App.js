@@ -8714,7 +8714,7 @@ function PhoneAuthModal({ role, onClose }) {
     setLoading(true);
     try {
       const result = await confirmation.confirm(otp);
-      await ensureUserDoc(result.user, role);
+      if (role) await ensureUserDoc(result.user, role);
       onClose();
     } catch {
       Alert.alert('Código incorrecto', 'Revisa el SMS e intenta de nuevo.');
@@ -8805,7 +8805,7 @@ function GoogleSignInButton({ role, disabled }) {
         .then(async (r) => {
           // Sign-in already succeeded here — don't surface an error alert for a
           // profile-doc hiccup. Pass the Google display name through so it carries over.
-          try { await ensureUserDoc(r.user, role, r.user.displayName); }
+          try { if (role) await ensureUserDoc(r.user, role, r.user.displayName); }
           catch (e) { console.warn('ensureUserDoc (Google):', e?.message); }
         })
         .catch(() => Alert.alert('Error', 'No se pudo iniciar sesión con Google'));
@@ -8849,7 +8849,7 @@ function LoginScreen({ role, onBack, mode = 'signup', onCreateAccount }) {
       const name = apple.fullName
         ? `${apple.fullName.givenName || ''} ${apple.fullName.familyName || ''}`.trim()
         : null;
-      await ensureUserDoc(result.user, role || 'client', name);
+      if (role) await ensureUserDoc(result.user, role, name);
     } catch (e) {
       if (e.code !== 'ERR_REQUEST_CANCELED') Alert.alert('Error', 'No se pudo iniciar sesión con Apple');
     } finally { setLoading(false); }
@@ -8891,7 +8891,7 @@ function LoginScreen({ role, onBack, mode = 'signup', onCreateAccount }) {
     setLoading(true);
     try {
       const uc = await signInWithEmailAndPassword(auth, email.trim(), password);
-      await ensureUserDoc(uc.user, role || 'client');
+      if (role) await ensureUserDoc(uc.user, role);
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
         if (isLogin) {
@@ -8965,7 +8965,7 @@ function LoginScreen({ role, onBack, mode = 'signup', onCreateAccount }) {
             )}
 
             {GOOGLE_CONFIGURED
-              ? <GoogleSignInButton role={role || 'client'} disabled={loading} />
+              ? <GoogleSignInButton role={role} disabled={loading} />
               : (
                 <TouchableOpacity style={[styles.googleButton, { opacity: 0.4 }]} disabled>
                   <View style={{ marginRight: 12 }}><GoogleGLogo size={18} /></View>
@@ -9069,7 +9069,7 @@ function LoginScreen({ role, onBack, mode = 'signup', onCreateAccount }) {
       </KeyboardAvoidingView>
 
       {showPhoneAuth && (
-        <PhoneAuthModal role={role || 'client'} onClose={() => setShowPhoneAuth(false)} />
+        <PhoneAuthModal role={role} onClose={() => setShowPhoneAuth(false)} />
       )}
     </SafeAreaView>
   );
@@ -9206,6 +9206,7 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [selectedRole, setSelectedRole] = useState(null);
   const [creatingAccount, setCreatingAccount] = useState(false);
+  const [needsRole, setNeedsRole] = useState(false); // authenticated but no profile yet → must pick a role
   const [activeTab, setActiveTab] = useState('browse');
   const [exploreSection, setExploreSection] = useState('workers');
   const [bidFilter, setBidFilter] = useState('all');
@@ -9290,17 +9291,13 @@ export default function App() {
             email: firebaseUser.email,
             ...userDoc.data()
           });
+          setNeedsRole(false);
         } else {
-          setUser({
-            id: firebaseUser.uid,
-            email: firebaseUser.email,
-            name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Usuario',
-            role: 'client',
-            rating: 0,
-            jobCount: 0,
-            clientRating: 0,
-            clientRatedCount: 0,
-          });
+          // Authenticated but no profile yet (new Google/Apple login, or an account that
+          // was just deleted and is signing back in). Don't silently create a client —
+          // send them to role selection to choose Cliente or Trabajador.
+          setUser(null);
+          setNeedsRole(true);
         }
         setupPushNotifications(firebaseUser.uid);
       } else {
@@ -9308,6 +9305,7 @@ export default function App() {
         setNeedsEmailVerification(false);
         setSelectedRole(null);
         setCreatingAccount(false);
+        setNeedsRole(false);
       }
       if (initializing) setInitializing(false);
     });
@@ -9632,6 +9630,24 @@ export default function App() {
   }
 
   if (!user) {
+    // Authenticated (Google/Apple/etc.) but no profile yet → choose a role, then create it.
+    if (needsRole && auth.currentUser) {
+      return (
+        <RoleSelectionScreen
+          onRoleSelected={async (chosenRole) => {
+            try {
+              await ensureUserDoc(auth.currentUser, chosenRole, auth.currentUser.displayName);
+              const d = await getDoc(doc(db, 'users', auth.currentUser.uid));
+              if (d.exists()) setUser({ id: auth.currentUser.uid, email: auth.currentUser.email, ...d.data() });
+              setNeedsRole(false);
+            } catch (e) {
+              Alert.alert('Error', 'No se pudo crear la cuenta. Intenta de nuevo.');
+            }
+          }}
+          onBack={async () => { await signOut(auth).catch(() => {}); setNeedsRole(false); }}
+        />
+      );
+    }
     // Creating an account: pick a role, then the signup form.
     if (creatingAccount && !selectedRole) {
       return <RoleSelectionScreen onRoleSelected={setSelectedRole} onBack={() => setCreatingAccount(false)} />;
@@ -10135,7 +10151,7 @@ export default function App() {
 
       <SafeAreaInsetsContext.Consumer>
         {(insets) => (
-      <View style={[styles.bottomNav, { backgroundColor: activeColors.bg, borderTopColor: activeColors.border, paddingBottom: (insets?.bottom || 0) + 8 }]}>
+      <View style={[styles.bottomNav, { backgroundColor: activeColors.bg, borderTopColor: activeColors.border, paddingBottom: Math.max((insets?.bottom || 0) - 10, 8) }]}>
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => setActiveTab('browse')}
